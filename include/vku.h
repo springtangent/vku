@@ -96,12 +96,13 @@ namespace vku
 		}
 
 		// returns true if success, false if error, allowing
-		// if(Result<Whatever> = returns_a_result())
+		// auto result = returns_a_result();
+		// if(!result)
 		// {
-		//     // handle success case
-		// } else {
 		//     // handle failure case
-		// }
+		// } 
+		// // handle success case
+		//
 		inline operator bool() const
 		{
 			return has_value;
@@ -174,6 +175,40 @@ namespace vku
 		std::error_code make_error_code(ShaderError shader_error)
 		{
 			return { static_cast<int>(shader_error), detail::shader_error_category };
+		}
+
+
+		enum class PipelineLayoutError {
+			device_not_provided,
+			failed_create_pipeline_layout
+		};
+
+		struct PipelineLayoutErrorCategory : std::error_category
+		{
+			const char* name() const noexcept override
+			{
+				return "vku_pipeline_layout";
+			}
+
+			std::string message(int err) const override
+			{
+				switch (static_cast<PipelineLayoutError>(err))
+				{
+				case PipelineLayoutError::device_not_provided:
+					return "device_not_provided";
+				case PipelineLayoutError::failed_create_pipeline_layout:
+					return "failed_create_pipeline_layout";
+				default:
+					return "unknown";
+				}
+			}
+		};
+
+		const PipelineLayoutErrorCategory pipeline_layout_error_category;
+
+		std::error_code make_error_code(PipelineLayoutError pipeline_layout_error)
+		{
+			return { static_cast<int>(pipeline_layout_error), detail::pipeline_layout_error_category };
 		}
 	};
 
@@ -250,6 +285,78 @@ namespace vku
 			return Result<ShaderModule>(detail::make_error_code(detail::ShaderError::failed_create_shader), vk_result);
 		}
 
-		return std::move(Result<ShaderModule>(ShaderModule(device, shader_module)));
+		return Result<ShaderModule>(ShaderModule(device, shader_module));
 	}
+
+
+	class PipelineLayout
+	{
+	public:
+		PipelineLayout() : device(VK_NULL_HANDLE), pipeline_layout(VK_NULL_HANDLE) { }
+
+		PipelineLayout(VkDevice d, VkPipelineLayout s) : device(d), pipeline_layout(s) { }
+
+		PipelineLayout(PipelineLayout&& p) noexcept : device(p.device), pipeline_layout(p.pipeline_layout)
+		{
+			p.clear();
+		}
+
+		PipelineLayout(const PipelineLayout& s) = delete;
+
+		~PipelineLayout() { destroy(); }
+
+		inline PipelineLayout& operator=(PipelineLayout&& p)
+		{
+			device = p.device;
+			pipeline_layout = p.pipeline_layout;
+			p.clear();
+			return *this;
+		}
+
+		inline operator VkPipelineLayout() const
+		{
+			return pipeline_layout;
+		}
+
+		inline void destroy()
+		{
+			if (device != VK_NULL_HANDLE && pipeline_layout != VK_NULL_HANDLE)
+			{
+				vkDestroyPipelineLayout(device, pipeline_layout, nullptr);
+			}
+			clear();
+		}
+	private:
+
+		inline void clear()
+		{
+			device = VK_NULL_HANDLE;
+			pipeline_layout = VK_NULL_HANDLE;
+		}
+
+		VkDevice device{ VK_NULL_HANDLE };
+		VkPipelineLayout pipeline_layout{ VK_NULL_HANDLE };
+	};
+
+
+	class PipelineLayoutBuilder
+	{
+	public:
+		PipelineLayoutBuilder(VkDevice d) : device(d) { }
+
+		Result<PipelineLayout> build() const
+		{
+			VkPipelineLayout pipeline_layout{ VK_NULL_HANDLE };
+			VkPipelineLayoutCreateInfo create_info{};
+			create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+			VkResult vk_result = vkCreatePipelineLayout(device, &create_info, nullptr, &pipeline_layout);
+			if (vk_result != VK_SUCCESS)
+			{
+				return Result<PipelineLayout>(detail::make_error_code(detail::PipelineLayoutError::failed_create_pipeline_layout), vk_result);
+			}
+			return  Result<PipelineLayout>(PipelineLayout(device, pipeline_layout));
+		}
+	private:
+		VkDevice device{ VK_NULL_HANDLE };
+	};
 };

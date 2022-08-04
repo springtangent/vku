@@ -331,6 +331,7 @@ public:
 
 	inline bool create_graphics_pipeline()
 	{
+		// create vertex shader
 		std::vector<char> vert_code = read_file(std::string(EXAMPLE_SHADER_DIRECTORY) + "/triangle.vert.spv");
 		if (vert_code.empty())
 		{
@@ -338,6 +339,16 @@ public:
 			return false; // failed to create shader modules
 		}
 
+		auto vert_module_result = vku::create_shader_module(vkb_device, vert_code);
+		if (!vert_module_result)
+		{
+			std::cout << "failed to create shader module\n";
+			return false; // failed to create shader modules
+		}
+		vku::ShaderModule vert_module = vert_module_result.get_value();
+
+
+		// create fragment shader
 		std::vector<char> frag_code = read_file(std::string(EXAMPLE_SHADER_DIRECTORY) + "/triangle.frag.spv");
 		if (frag_code.empty())
 		{
@@ -345,33 +356,26 @@ public:
 			return false; // failed to create shader modules
 		}
 
-		auto vert_module_result = vku::create_shader_module(vkb_device, vert_code);
-		vku::ShaderModule vert_module;
-		if (vert_module_result)
-		{
-			vert_module = vert_module_result.get_value();
-		}
-		else
-		{
-			// TODO: log error
-			std::cout << "failed to create shader module\n";
-			return false; // failed to create shader modules
-		}
-
-
 		auto frag_module_result = vku::create_shader_module(vkb_device, frag_code);
-		vku::ShaderModule frag_module;
-		if (frag_module_result)
+		if (!frag_module_result)
 		{
-			frag_module = frag_module_result.get_value();
-		}
-		else
-		{
-			// TODO: log error
 			std::cout << "failed to create shader module\n";
 			return false; // failed to create shader modules
 		}
+		vku::ShaderModule frag_module = frag_module_result.get_value();
 
+
+		// create pipeline layout
+		vku::PipelineLayoutBuilder pipeline_layout_builder(vkb_device);
+		auto pipeline_layout_result = pipeline_layout_builder.build();
+		if (!pipeline_layout_result)
+		{
+			return false;
+		}
+		pipeline_layout = pipeline_layout_result.get_value();
+
+
+		// create pipeline
 		VkPipelineShaderStageCreateInfo vert_stage_info = {};
 		vert_stage_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 		vert_stage_info.stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -446,18 +450,6 @@ public:
 		color_blending.blendConstants[2] = 0.0f;
 		color_blending.blendConstants[3] = 0.0f;
 
-		VkPipelineLayoutCreateInfo pipeline_layout_info = {};
-		pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-		pipeline_layout_info.setLayoutCount = 0;
-		pipeline_layout_info.pushConstantRangeCount = 0;
-
-		if (vkCreatePipelineLayout(
-			vkb_device, &pipeline_layout_info, nullptr, &pipeline_layout) != VK_SUCCESS)
-		{
-			std::cout << "failed to create pipeline layout\n";
-			return false; // failed to create pipeline layout
-		}
-
 		std::vector<VkDynamicState> dynamic_states = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
 
 		VkPipelineDynamicStateCreateInfo dynamic_info = {};
@@ -493,7 +485,7 @@ public:
 	inline void destroy_graphics_pipeline()
 	{
 		vkDestroyPipeline(vkb_device, graphics_pipeline, nullptr);
-		vkDestroyPipelineLayout(vkb_device, pipeline_layout, nullptr);
+		pipeline_layout.destroy();
 	}
 
 	inline bool create_command_buffers()
@@ -843,7 +835,7 @@ private:
 	std::vector<VkFence> image_in_flight{};
 	size_t current_frame{ 0 };
 
-	VkPipelineLayout pipeline_layout{ VK_NULL_HANDLE };
+	vku::PipelineLayout  pipeline_layout{};
 	VkPipeline graphics_pipeline{ VK_NULL_HANDLE };
 };
 
