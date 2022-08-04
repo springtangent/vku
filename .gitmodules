@@ -1,0 +1,6 @@
+[submodule "extern/glfw"]
+	path = extern/glfw
+	url = ../../glfw/glfw.git
+[submodule "extern/vk-bootstrap"]
+	path = extern/vk-bootstrap
+	url = ../../charles-lunarg/vk-bootstrap.git

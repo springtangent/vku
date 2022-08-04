@@ -1,3 +1,9 @@
+# intermediate build products
+build
+*.spv
+*.pyc
+__pycache__
+
 # Prerequisites
 *.d
 
