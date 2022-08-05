@@ -210,6 +210,40 @@ namespace vku
 		{
 			return { static_cast<int>(pipeline_layout_error), detail::pipeline_layout_error_category };
 		}
+
+
+		enum class PipelineError {
+			device_not_provided,
+			failed_create_pipeline
+		};
+
+		struct PipelineErrorCategory : std::error_category
+		{
+			const char* name() const noexcept override
+			{
+				return "vku_pipeline";
+			}
+
+			std::string message(int err) const override
+			{
+				switch (static_cast<PipelineError>(err))
+				{
+				case PipelineError::device_not_provided:
+					return "device_not_provided";
+				case PipelineError::failed_create_pipeline:
+					return "failed_create_pipeline_layout";
+				default:
+					return "unknown";
+				}
+			}
+		};
+
+		const PipelineErrorCategory pipeline_error_category;
+
+		std::error_code make_error_code(PipelineError pipeline_error)
+		{
+			return { static_cast<int>(pipeline_error), detail::pipeline_error_category };
+		}
 	};
 
 
@@ -347,8 +381,12 @@ namespace vku
 		Result<PipelineLayout> build() const
 		{
 			VkPipelineLayout pipeline_layout{ VK_NULL_HANDLE };
+
 			VkPipelineLayoutCreateInfo create_info{};
 			create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+
+			// TODO: descriptor set layouts, push constant ranges.
+
 			VkResult vk_result = vkCreatePipelineLayout(device, &create_info, nullptr, &pipeline_layout);
 			if (vk_result != VK_SUCCESS)
 			{
@@ -357,6 +395,214 @@ namespace vku
 			return  Result<PipelineLayout>(PipelineLayout(device, pipeline_layout));
 		}
 	private:
+		VkDevice device{ VK_NULL_HANDLE };
+	};
+
+
+	class Pipeline
+	{
+	public:
+		Pipeline() : device(VK_NULL_HANDLE), pipeline(VK_NULL_HANDLE) { }
+		Pipeline(VkDevice d, VkPipeline p) : device(d), pipeline(p) { }
+		Pipeline(Pipeline&& p) : device(p.device), pipeline(p.pipeline) { p.clear(); }
+		~Pipeline() { destroy(); }
+
+		inline void destroy()
+		{
+			if (device != VK_NULL_HANDLE && pipeline != VK_NULL_HANDLE)
+			{
+				vkDestroyPipeline(device, pipeline, nullptr);
+			}
+			clear();
+		}
+
+		inline Pipeline& operator=(Pipeline&& p)
+		{
+			// TODO: if we're valid, we should destroy ourselves...
+			device = p.device;
+			pipeline = p.pipeline;
+			p.clear();
+			return *this;
+		}
+
+		inline operator VkPipeline() const
+		{
+			return pipeline;
+		}
+	private:
+		inline void clear()
+		{
+			device = VK_NULL_HANDLE;
+			pipeline = VK_NULL_HANDLE;
+		}
+
+		VkDevice device{ VK_NULL_HANDLE };
+		VkPipeline pipeline{ VK_NULL_HANDLE };
+	};
+
+
+	class GraphicsPipelineBuilder
+	{
+	public:
+		GraphicsPipelineBuilder(VkDevice d) : device(d) { }
+		~GraphicsPipelineBuilder() { }
+
+		inline GraphicsPipelineBuilder& add_shader_stage(VkShaderStageFlagBits stage, VkShaderModule module, const char *name="main")
+		{
+			VkPipelineShaderStageCreateInfo stage_info = {};
+			stage_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+			stage_info.stage = stage;
+			stage_info.module = module;
+			stage_info.pName = name;
+			shader_stages.push_back(stage_info);
+			return *this;
+		}
+
+		inline GraphicsPipelineBuilder& add_viewport(float x, float y, float width, float height, float min_depth, float max_depth)
+		{
+			VkViewport viewport = {};
+			viewport.x = x;
+			viewport.y = y;
+			viewport.width = width;
+			viewport.height = height;
+			viewport.minDepth = 0.0f;
+			viewport.maxDepth = 1.0f;
+			viewports.push_back(viewport);
+			return *this;
+		}
+
+		inline GraphicsPipelineBuilder& add_scissor(int32_t offsetx, int32_t offsety, uint32_t extentx, uint32_t extenty)
+		{
+			VkRect2D scissor{};
+			scissor.offset = { offsetx, offsety };
+			scissor.extent = { extentx, extenty };
+			scissors.push_back(scissor);
+			return *this;
+		}
+
+		inline GraphicsPipelineBuilder& set_cull_mode(VkCullModeFlagBits c)
+		{
+			cull_mode = c;
+			return *this;
+		}
+
+		inline GraphicsPipelineBuilder& add_dynamic_state(VkDynamicState s)
+		{
+			dynamic_states.push_back(s);
+			return *this;
+		}
+
+		inline GraphicsPipelineBuilder& set_render_pass(VkRenderPass rp, uint32_t sp = 0)
+		{
+			render_pass = rp;
+			subpass = sp;
+			return *this;
+		}
+
+		inline GraphicsPipelineBuilder& set_pipeline_layout(VkPipelineLayout pl)
+		{
+			pipeline_layout = pl;
+			return *this;
+		}
+		
+		inline GraphicsPipelineBuilder& add_color_blend_attachment(const VkPipelineColorBlendAttachmentState &a)
+		{
+			color_blend_attachments.push_back(a);
+			return *this;
+		}
+
+		inline Result<Pipeline> build() const
+		{
+			if (device == VK_NULL_HANDLE)
+			{
+				// TODO: set error
+			}
+
+			VkPipelineVertexInputStateCreateInfo vertex_input_info = {};
+			vertex_input_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+			vertex_input_info.vertexBindingDescriptionCount = 0;
+			vertex_input_info.vertexAttributeDescriptionCount = 0;
+
+			VkPipelineInputAssemblyStateCreateInfo input_assembly = {};
+			input_assembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+			input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+			input_assembly.primitiveRestartEnable = VK_FALSE;
+
+			VkPipelineViewportStateCreateInfo viewport_state = {};
+			viewport_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+			viewport_state.viewportCount = viewports.size();
+			viewport_state.pViewports = viewports.data();
+			viewport_state.scissorCount = scissors.size();
+			viewport_state.pScissors = scissors.data();
+
+			VkPipelineRasterizationStateCreateInfo rasterizer = {};
+			rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+			rasterizer.depthClampEnable = VK_FALSE;
+			rasterizer.rasterizerDiscardEnable = VK_FALSE;
+			rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+			rasterizer.lineWidth = 1.0f;
+			rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+			rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+			rasterizer.depthBiasEnable = VK_FALSE;
+
+			VkPipelineMultisampleStateCreateInfo multisampling = {};
+			multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+			multisampling.sampleShadingEnable = VK_FALSE;
+			multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+			VkPipelineColorBlendStateCreateInfo color_blending = {};
+			color_blending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+			color_blending.logicOpEnable = VK_FALSE;
+			color_blending.logicOp = VK_LOGIC_OP_COPY;
+			color_blending.attachmentCount = color_blend_attachments.size();
+			color_blending.pAttachments = color_blend_attachments.data();
+			color_blending.blendConstants[0] = 0.0f;
+			color_blending.blendConstants[1] = 0.0f;
+			color_blending.blendConstants[2] = 0.0f;
+			color_blending.blendConstants[3] = 0.0f;
+
+			VkPipelineDynamicStateCreateInfo dynamic_info = {};
+			dynamic_info.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+			dynamic_info.dynamicStateCount = static_cast<uint32_t> (dynamic_states.size());
+			dynamic_info.pDynamicStates = dynamic_states.data();
+
+			VkGraphicsPipelineCreateInfo create_info{};
+
+			create_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+			create_info.stageCount = shader_stages.size();
+			create_info.pStages = shader_stages.data();
+			create_info.pVertexInputState = &vertex_input_info;
+			create_info.pInputAssemblyState = &input_assembly;
+			create_info.pViewportState = &viewport_state;
+			create_info.pRasterizationState = &rasterizer;
+			create_info.pMultisampleState = &multisampling;
+			create_info.pColorBlendState = &color_blending;
+			create_info.pDynamicState = &dynamic_info;
+			create_info.layout = pipeline_layout;
+			create_info.renderPass = render_pass;
+			create_info.subpass = subpass;
+			create_info.basePipelineHandle = VK_NULL_HANDLE;
+
+			VkPipeline graphics_pipeline{ VK_NULL_HANDLE };
+			VkResult vk_result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &create_info, nullptr, &graphics_pipeline);
+			if (vk_result != VK_SUCCESS)
+			{
+				return Result<Pipeline>(detail::make_error_code(detail::PipelineError::failed_create_pipeline), vk_result);
+			}
+			return  Result<Pipeline>(Pipeline(device, graphics_pipeline));
+		}
+	private:
+		std::vector<VkDynamicState> dynamic_states{};
+		VkCullModeFlagBits cull_mode{ VK_CULL_MODE_BACK_BIT  };
+		std::vector<VkPipelineShaderStageCreateInfo> shader_stages{};
+		std::vector<VkViewport> viewports{};
+		std::vector<VkRect2D> scissors{};
+		std::vector< VkPipelineColorBlendAttachmentState> color_blend_attachments{};
+
+		VkPipelineLayout pipeline_layout{ VK_NULL_HANDLE };
+		VkRenderPass render_pass{ VK_NULL_HANDLE };
+		uint32_t subpass{ 0 };
+
 		VkDevice device{ VK_NULL_HANDLE };
 	};
 };
