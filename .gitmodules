@@ -4,3 +4,6 @@
 [submodule "extern/vk-bootstrap"]
 	path = extern/vk-bootstrap
 	url = ../../charles-lunarg/vk-bootstrap.git
+[submodule "extern/glm"]
+	path = extern/glm
+	url = ../../g-truc/glm.git

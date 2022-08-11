@@ -23,9 +23,13 @@ set(VKU_EXAMPLES_EXTERN_DIR "extern")
 
 add_subdirectory("${VKU_EXAMPLES_EXTERN_DIR}/glfw")
 add_subdirectory("${VKU_EXAMPLES_EXTERN_DIR}/vk-bootstrap")
+include_directories("${VKU_EXAMPLES_EXTERN_DIR}/glm")
 
 include_directories(include ${Vulkan_INCLUDE_DIRS})
 include_directories("${VKU_EXAMPLES_EXTERN_DIR}/glm")
 
 add_executable(vku_example examples/example.cpp)
 target_link_libraries(vku_example PRIVATE ${Vulkan_LIBRARIES} glfw vk-bootstrap::vk-bootstrap)
+
+add_executable(vku_buffer_example examples/vertex_buffer_example.cpp)
+target_link_libraries(vku_buffer_example PRIVATE ${Vulkan_LIBRARIES} glfw vk-bootstrap::vk-bootstrap)

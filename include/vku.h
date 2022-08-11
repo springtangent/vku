@@ -28,6 +28,7 @@ SOFTWARE.
 
 #include <vector>
 #include <system_error>
+#include <limits>
 
 namespace vku
 {
@@ -404,12 +405,17 @@ namespace vku
 	public:
 		Pipeline() : device(VK_NULL_HANDLE), pipeline(VK_NULL_HANDLE) { }
 		Pipeline(VkDevice d, VkPipeline p) : device(d), pipeline(p) { }
-		Pipeline(Pipeline&& p) : device(p.device), pipeline(p.pipeline) { p.clear(); }
+		Pipeline(Pipeline&& p) noexcept : device(p.device), pipeline(p.pipeline) { p.clear(); }
 		~Pipeline() { destroy(); }
+
+		inline bool is_valid() const
+		{
+			return device != VK_NULL_HANDLE && pipeline != VK_NULL_HANDLE;
+		}
 
 		inline void destroy()
 		{
-			if (device != VK_NULL_HANDLE && pipeline != VK_NULL_HANDLE)
+			if (is_valid())
 			{
 				vkDestroyPipeline(device, pipeline, nullptr);
 			}
@@ -418,7 +424,7 @@ namespace vku
 
 		inline Pipeline& operator=(Pipeline&& p)
 		{
-			// TODO: if we're valid, we should destroy ourselves...
+			// TODO: if we're valid, should we destroy ourselves?
 			device = p.device;
 			pipeline = p.pipeline;
 			p.clear();
@@ -511,6 +517,18 @@ namespace vku
 			return *this;
 		}
 
+		inline GraphicsPipelineBuilder& add_vertex_binding(const VkVertexInputBindingDescription &binding)
+		{
+			vertex_bindings.push_back(binding);
+			return *this;
+		}
+
+		inline GraphicsPipelineBuilder& add_vertex_attributes(const std::vector<VkVertexInputAttributeDescription> &attributes)
+		{
+			vertex_attributes.insert(vertex_attributes.end(), attributes.begin(), attributes.end());
+			return *this;
+		}
+
 		inline Result<Pipeline> build() const
 		{
 			if (device == VK_NULL_HANDLE)
@@ -520,8 +538,12 @@ namespace vku
 
 			VkPipelineVertexInputStateCreateInfo vertex_input_info = {};
 			vertex_input_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-			vertex_input_info.vertexBindingDescriptionCount = 0;
-			vertex_input_info.vertexAttributeDescriptionCount = 0;
+			
+			vertex_input_info.vertexBindingDescriptionCount = vertex_bindings.size();
+			vertex_input_info.pVertexBindingDescriptions = vertex_bindings.data();
+
+			vertex_input_info.vertexAttributeDescriptionCount = vertex_attributes.size();
+			vertex_input_info.pVertexAttributeDescriptions = vertex_attributes.data();
 
 			VkPipelineInputAssemblyStateCreateInfo input_assembly = {};
 			input_assembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -604,5 +626,190 @@ namespace vku
 		uint32_t subpass{ 0 };
 
 		VkDevice device{ VK_NULL_HANDLE };
+
+		std::vector< VkVertexInputBindingDescription> vertex_bindings{};
+		std::vector<VkVertexInputAttributeDescription> vertex_attributes{};
+	};
+
+
+	struct Buffer
+	{
+	public:
+		Buffer(VkDevice d=VK_NULL_HANDLE, VkBuffer b = VK_NULL_HANDLE, VkDeviceMemory m = VK_NULL_HANDLE, VkDeviceSize s=0, void *map=nullptr) : device(d), buffer(b), memory(m), size(s), mapped(map) { }
+		Buffer(Buffer&& d) : device(d.device), buffer(d.buffer), memory(d.memory), size(d.size), mapped(d.mapped)
+		{ 
+			d.clear();
+		}
+		~Buffer() { destroy(); }
+
+		inline Buffer& operator=(Buffer&& b) noexcept
+		{
+			// TODO: if we're valid, should we destroy ourselves? It seems like we leak if we don't.
+			device = b.device;
+			buffer = b.buffer;
+			memory = b.memory;
+			size = b.size;
+			mapped = b.mapped;
+			b.clear();
+			return *this;
+		}
+
+		inline operator VkBuffer() const
+		{
+			return buffer;
+		}
+
+		inline bool is_valid() const
+		{
+			return device != VK_NULL_HANDLE && buffer != VK_NULL_HANDLE && memory != VK_NULL_HANDLE;
+		}
+
+		inline void destroy()
+		{
+			if (is_valid())
+			{
+				vkDestroyBuffer(device, buffer, nullptr);
+				vkFreeMemory(device, memory, nullptr);
+			}
+			clear();
+		}
+
+		inline VkResult map_memory(VkDeviceSize s=VK_WHOLE_SIZE, VkDeviceSize offset=0)
+		{
+			// TODO: test for validity, convey non-vk errors.
+			return vkMapMemory(device, memory, offset, s, offset, &mapped);
+		}
+
+		inline void* get_mapped() const
+		{
+			return mapped;
+		}
+
+		inline VkDeviceSize get_size() const
+		{
+			return size;
+		}
+
+		inline void unmap_memory()
+		{
+			vkUnmapMemory(device, memory);
+			mapped = nullptr;
+		}
+	private:
+		inline void clear()
+		{
+			device = VK_NULL_HANDLE;
+			buffer = VK_NULL_HANDLE;
+			memory = VK_NULL_HANDLE;
+			size = 0;
+			mapped = nullptr;
+		}
+
+		VkDevice device{ VK_NULL_HANDLE };
+		VkBuffer buffer{ VK_NULL_HANDLE };
+		VkDeviceMemory memory{ VK_NULL_HANDLE };
+		VkDeviceSize size{ 0 };
+		void* mapped{ nullptr };
+	};
+
+	const uint32_t MEMORY_TYPE_NOT_FOUND = std::numeric_limits<uint32_t>::max();
+	const uint32_t PHYSICAL_DEVICE_NOT_PROVIDED = MEMORY_TYPE_NOT_FOUND - 1;
+
+	inline uint32_t find_memory_type(VkPhysicalDevice physical_device, uint32_t type_filter, VkMemoryPropertyFlags  properties)
+	{
+		if (physical_device == VK_NULL_HANDLE)
+		{
+			return PHYSICAL_DEVICE_NOT_PROVIDED;
+		}
+
+		VkPhysicalDeviceMemoryProperties memProperties;
+		vkGetPhysicalDeviceMemoryProperties(physical_device, &memProperties);
+
+		for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++)
+		{
+			if ((type_filter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties)
+			{
+				return i;
+			}
+		}
+
+		return MEMORY_TYPE_NOT_FOUND;
+	}
+
+
+	class BufferFactory
+	{
+	public:
+		BufferFactory(VkDevice d, VkPhysicalDevice pd) : device(d), physical_device(pd) { }
+
+		inline Result<Buffer> build(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags memory_properties) const
+		{
+			if (device == VK_NULL_HANDLE)
+			{
+				// TODO: error case.
+			}
+
+			VkBufferCreateInfo bufferInfo{};
+			bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+			bufferInfo.size = size;
+			bufferInfo.usage = usage;
+			bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+			VkBuffer buffer;
+			if (vkCreateBuffer(device, &bufferInfo, nullptr, &buffer) != VK_SUCCESS)
+			{
+				// TODO: error
+				throw std::runtime_error("failed to create vertex buffer!");
+			}
+
+			VkMemoryRequirements memRequirements;
+			vkGetBufferMemoryRequirements(device, buffer, &memRequirements);
+
+			uint32_t type_index = find_memory_type(physical_device, memRequirements.memoryTypeBits, memory_properties);
+
+			if (type_index == PHYSICAL_DEVICE_NOT_PROVIDED)
+			{
+				// TODO: error
+			}
+			
+			if (type_index == MEMORY_TYPE_NOT_FOUND)
+			{
+				// TODO: error
+			}
+
+			VkMemoryAllocateInfo allocInfo{};
+			allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+			allocInfo.allocationSize = memRequirements.size;
+			allocInfo.memoryTypeIndex = type_index;
+
+			VkDeviceMemory memory{ VK_NULL_HANDLE };
+			if (vkAllocateMemory(device, &allocInfo, nullptr, &memory) != VK_SUCCESS)
+			{
+				// TODO: error handling
+				throw std::runtime_error("failed to allocate vertex buffer memory!");
+			}
+
+			vkBindBufferMemory(device, buffer, memory, 0);
+
+			/*
+			void* data;
+			vkMapMemory(device, vertexBufferMemory, 0, bufferInfo.size, 0, &data);
+			memcpy(data, vertices.data(), (size_t)bufferInfo.size);
+			vkUnmapMemory(device, vertexBufferMemory);
+			*/
+
+			return Result<Buffer>(Buffer(device, buffer, memory, size, nullptr));
+		}
+	private:
+
+
+		VkDevice device{ VK_NULL_HANDLE };
+		VkPhysicalDevice physical_device;
+	};
+
+
+	class DeviceBufferBuilder
+	{
+
 	};
 };
