@@ -245,6 +245,59 @@ namespace vku
 		{
 			return { static_cast<int>(pipeline_error), detail::pipeline_error_category };
 		}
+
+		// CommandBufferExecutorError
+		enum class CommandBufferExecutorError {
+			device_not_provided,
+			command_pool_not_provided,
+			queue_not_provided,
+			allocate_command_buffer_failed,
+			begin_command_buffer_failed,
+			callback_failed,
+			end_command_buffer_failed,
+			queue_submit_failed,
+			wait_idle_failed
+		};
+
+		struct CommandBufferExecutorErrorCategory : std::error_category
+		{
+			const char* name() const noexcept override
+			{
+				return "vku_command_buffer_executor";
+			}
+
+			std::string message(int err) const override
+			{
+				switch (static_cast<CommandBufferExecutorError>(err))
+				{
+				case CommandBufferExecutorError::device_not_provided:
+					return "device_not_provided";
+				case CommandBufferExecutorError::command_pool_not_provided:
+					return "failed_create_pipeline_layout";
+				case CommandBufferExecutorError::queue_not_provided:
+					return "queue_not_provided";
+				case CommandBufferExecutorError::allocate_command_buffer_failed:
+					return "allocate_command_buffer_failed";
+				case CommandBufferExecutorError::begin_command_buffer_failed:
+					return "begin_command_buffer_failed";
+				case CommandBufferExecutorError::queue_submit_failed:
+					return "queue_submit_failed";
+				case CommandBufferExecutorError::wait_idle_failed:
+					return "wait_idle_failed";
+				case CommandBufferExecutorError::end_command_buffer_failed:
+					return "end_command_buffer_failed";
+				default:
+					return "unknown";
+				}
+			}
+		};
+
+		const CommandBufferExecutorErrorCategory command_buffer_executor_error_category;
+
+		std::error_code make_error_code(CommandBufferExecutorError command_buffer_executor_error)
+		{
+			return { static_cast<int>(command_buffer_executor_error), detail::command_buffer_executor_error_category };
+		}
 	};
 
 
@@ -791,13 +844,6 @@ namespace vku
 
 			vkBindBufferMemory(device, buffer, memory, 0);
 
-			/*
-			void* data;
-			vkMapMemory(device, vertexBufferMemory, 0, bufferInfo.size, 0, &data);
-			memcpy(data, vertices.data(), (size_t)bufferInfo.size);
-			vkUnmapMemory(device, vertexBufferMemory);
-			*/
-
 			return Result<Buffer>(Buffer(device, buffer, memory, size, nullptr));
 		}
 	private:
@@ -808,8 +854,136 @@ namespace vku
 	};
 
 
-	class DeviceBufferBuilder
+	class SingleTimeCommandExecutor
 	{
+	public:
+		SingleTimeCommandExecutor(VkDevice _device, VkCommandPool _command_pool, VkQueue _queue) : device(_device), command_pool(_command_pool), queue(_queue)
+		{
+		}
 
+		inline bool is_valid() const
+		{
+			return device != VK_NULL_HANDLE && command_pool != VK_NULL_HANDLE && queue != VK_NULL_HANDLE;
+		}
+
+		inline void deallocate(VkCommandBuffer command_buffer) const
+		{
+			vkFreeCommandBuffers(device, command_pool, 1, &command_buffer);
+		}
+
+		template<typename F>
+		Result<VkCommandBuffer> execute(F f, VkFence fence = VK_NULL_HANDLE) const
+		{
+			Error error{};
+			VkCommandBuffer command_buffer{ VK_NULL_HANDLE };
+
+			if (!begin_single_time_commands(command_buffer, error))
+			{
+				deallocate(command_buffer);
+				return Result<VkCommandBuffer>(error);
+			}
+
+			// TODO: allow for an error in f to stop this from continuing
+			bool callback_result = f(command_buffer);
+
+			if (!callback_result)
+			{
+				deallocate(command_buffer);
+				error = Error{ detail::make_error_code(detail::CommandBufferExecutorError::callback_failed) };
+				return Result<VkCommandBuffer>(error);
+			}
+
+			bool result = end_single_time_commands(command_buffer, error, fence);
+
+			if (!result)
+			{
+				// we have a valid command buffer, but there was an error ending the single time commands.
+				deallocate(command_buffer);
+
+				return Result<VkCommandBuffer>(error);
+			}
+
+			// if the user doesn't pass in a fence, wait for the queue to go idle and delete the command buffer
+			// otherwise we assume the user will wait for the fence and destroy the command buffer on their own.
+			if (fence == VK_NULL_HANDLE)
+			{
+				// TODO: figure out if we should be calling this or leaving it to the caller to decide.
+				auto vk_result = vkQueueWaitIdle(queue);
+
+				deallocate(command_buffer);
+
+				if (vk_result != VK_SUCCESS)
+				{
+					error = Error{ detail::make_error_code(detail::CommandBufferExecutorError::wait_idle_failed), vk_result };
+					return Result<VkCommandBuffer>(error);
+				}
+
+				command_buffer = VK_NULL_HANDLE;
+			}
+
+			return Result<VkCommandBuffer>(command_buffer);
+		}
+	private:
+		bool begin_single_time_commands(VkCommandBuffer &commandBuffer, Error &error) const
+		{
+			VkCommandBufferAllocateInfo allocInfo{};
+			allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+			allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+			allocInfo.commandPool = command_pool;
+			allocInfo.commandBufferCount = 1;
+			commandBuffer = VK_NULL_HANDLE;
+
+			auto vk_result = vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer);
+
+			if (vk_result != VK_SUCCESS)
+			{
+				error = { detail::make_error_code(detail::CommandBufferExecutorError::allocate_command_buffer_failed), vk_result };
+				return false;
+			}
+
+			VkCommandBufferBeginInfo beginInfo{};
+			beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+			beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+			vk_result = vkBeginCommandBuffer(commandBuffer, &beginInfo);
+
+			if (vk_result != VK_SUCCESS)
+			{
+				error = { detail::make_error_code(detail::CommandBufferExecutorError::begin_command_buffer_failed), vk_result };
+				return false;
+			}
+
+			return true;
+		}
+
+		// returns false if error occurred.
+		bool end_single_time_commands(VkCommandBuffer commandBuffer, Error &error, VkFence fence = VK_NULL_HANDLE) const
+		{
+			auto vk_result = vkEndCommandBuffer(commandBuffer);
+			if (vk_result != VK_SUCCESS)
+			{
+				error = Error{ detail::make_error_code(detail::CommandBufferExecutorError::end_command_buffer_failed), vk_result };
+				return false;
+			}
+
+			VkSubmitInfo submitInfo{};
+			submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+			submitInfo.commandBufferCount = 1;
+			submitInfo.pCommandBuffers = &commandBuffer;
+
+			vk_result = vkQueueSubmit(queue, 1, &submitInfo, fence);
+
+			if (vk_result != VK_SUCCESS)
+			{
+				error = Error{ detail::make_error_code(detail::CommandBufferExecutorError::queue_submit_failed), vk_result };
+				return false;
+			}
+
+			return true;
+		}
+
+		VkDevice device{ VK_NULL_HANDLE };
+		VkQueue queue{ VK_NULL_HANDLE };
+		VkCommandPool command_pool{ VK_NULL_HANDLE };
 	};
 };

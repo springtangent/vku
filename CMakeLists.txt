@@ -33,3 +33,6 @@ target_link_libraries(vku_example PRIVATE ${Vulkan_LIBRARIES} glfw vk-bootstrap:
 
 add_executable(vku_buffer_example examples/vertex_buffer_example.cpp)
 target_link_libraries(vku_buffer_example PRIVATE ${Vulkan_LIBRARIES} glfw vk-bootstrap::vk-bootstrap)
+
+add_executable(vku_device_buffer_example examples/device_vertex_buffer_example.cpp)
+target_link_libraries(vku_device_buffer_example PRIVATE ${Vulkan_LIBRARIES} glfw vk-bootstrap::vk-bootstrap)
