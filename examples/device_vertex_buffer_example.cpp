@@ -451,6 +451,9 @@ public:
 		pipeline_layout.destroy();
 	}
 
+	/* 
+		This waits for the queue to drain then deletes the command buffer in the call to SingleTimeCommandExecutor::execute. It's less code, but performance suffers.
+	*/
 	inline bool create_vertex_buffer()
 	{
 		vku::BufferFactory factory(vkb_device, vkb_physical_device);
@@ -511,6 +514,10 @@ public:
 		return true;
 	}
 
+	/*
+		This creates a fence and passes it to SingleTimeCommandExecutor::execute. This allows you to perform other operations while the transfer is happening, then wait
+		for the fence before using the transfered data.
+	*/
 	inline bool create_vertex_buffer_fence()
 	{
 		vku::BufferFactory factory(vkb_device, vkb_physical_device);
@@ -524,7 +531,7 @@ public:
 		}
 
 		// this will be destroyed when it goes out of scope at the end of the functin.
-		auto staging_buffer = staging_buffer_result.get_value();
+		staging_buffer = staging_buffer_result.get_value();
 
 		auto vb_result = factory.build(sizeof(Vertex) * vertices.size(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
@@ -802,6 +809,7 @@ public:
 			vkWaitForFences(vkb_device, 1, &vertex_buffer_fence, true, UINT64_MAX);
 			vkDestroyFence(vkb_device, vertex_buffer_fence, nullptr);
 			vkFreeCommandBuffers(vkb_device, command_pool, 1, &vertex_command_buffer);
+			staging_buffer.destroy(); // we need to make sure the staging buffer remains live as well.
 		}
 
 		if (!create_command_buffers())
@@ -953,6 +961,7 @@ private:
 	vku::Pipeline graphics_pipeline{};
 
 	vku::Buffer vertex_buffer{};
+	vku::Buffer staging_buffer{};
 	VkFence vertex_buffer_fence{ VK_NULL_HANDLE };
 	VkCommandBuffer vertex_command_buffer{ VK_NULL_HANDLE };
 };
