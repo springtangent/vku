@@ -93,7 +93,6 @@ namespace vku
 			}
 			result = error.error_code;
 			return true;
-			
 		}
 
 		// returns true if success, false if error, allowing
@@ -212,8 +211,8 @@ namespace vku
 			return { static_cast<int>(pipeline_layout_error), detail::pipeline_layout_error_category };
 		}
 
-
-		enum class PipelineError {
+		enum class PipelineError
+		{
 			device_not_provided,
 			failed_create_pipeline
 		};
@@ -297,6 +296,41 @@ namespace vku
 		std::error_code make_error_code(CommandBufferExecutorError command_buffer_executor_error)
 		{
 			return { static_cast<int>(command_buffer_executor_error), detail::command_buffer_executor_error_category };
+		}
+
+
+		// DescriptorSetLayoutError
+		enum class DescriptorSetLayoutError {
+			device_not_provided,
+			create_failed
+		};
+
+		struct DescriptorSetLayoutErrorCategory : std::error_category
+		{
+			const char* name() const noexcept override
+			{
+				return "vku_descriptor_set_layout";
+			}
+
+			std::string message(int err) const override
+			{
+				switch (static_cast<DescriptorSetLayoutError>(err))
+				{
+				case DescriptorSetLayoutError::device_not_provided:
+					return "device_not_provided";
+				case DescriptorSetLayoutError::create_failed:
+					return "create_failed";
+				default:
+					return "unknown";
+				}
+			}
+		};
+
+		const DescriptorSetLayoutErrorCategory descriptor_set_layout_error_category;
+
+		std::error_code make_error_code(DescriptorSetLayoutError descriptor_set_layout_error)
+		{
+			return { static_cast<int>(descriptor_set_layout_error), detail::descriptor_set_layout_error_category };
 		}
 	};
 
@@ -432,6 +466,12 @@ namespace vku
 	public:
 		PipelineLayoutBuilder(VkDevice d) : device(d) { }
 
+		inline PipelineLayoutBuilder& add_descriptor_set(VkDescriptorSetLayout descriptor_set_layout)
+		{
+			descriptor_set_layouts.push_back(descriptor_set_layout);
+			return *this;
+		}
+
 		Result<PipelineLayout> build() const
 		{
 			VkPipelineLayout pipeline_layout{ VK_NULL_HANDLE };
@@ -440,6 +480,8 @@ namespace vku
 			create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
 
 			// TODO: descriptor set layouts, push constant ranges.
+			create_info.pSetLayouts = descriptor_set_layouts.data();
+			create_info.setLayoutCount = descriptor_set_layouts.size();
 
 			VkResult vk_result = vkCreatePipelineLayout(device, &create_info, nullptr, &pipeline_layout);
 			if (vk_result != VK_SUCCESS)
@@ -450,6 +492,7 @@ namespace vku
 		}
 	private:
 		VkDevice device{ VK_NULL_HANDLE };
+		std::vector<VkDescriptorSetLayout> descriptor_set_layouts{};
 	};
 
 
@@ -530,12 +573,24 @@ namespace vku
 			return *this;
 		}
 
+		inline GraphicsPipelineBuilder& set_viewport_count(uint32_t count)
+		{
+			viewport_count = count;
+			return *this;
+		}
+
 		inline GraphicsPipelineBuilder& add_scissor(int32_t offsetx, int32_t offsety, uint32_t extentx, uint32_t extenty)
 		{
 			VkRect2D scissor{};
 			scissor.offset = { offsetx, offsety };
 			scissor.extent = { extentx, extenty };
 			scissors.push_back(scissor);
+			return *this;
+		}
+
+		inline GraphicsPipelineBuilder& set_scissor_count(uint32_t count)
+		{
+			scissor_count = count;
 			return *this;
 		}
 
@@ -605,9 +660,9 @@ namespace vku
 
 			VkPipelineViewportStateCreateInfo viewport_state = {};
 			viewport_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-			viewport_state.viewportCount = viewports.size();
+			viewport_state.viewportCount = viewports.size() ? viewports.size() : viewport_count;
 			viewport_state.pViewports = viewports.data();
-			viewport_state.scissorCount = scissors.size();
+			viewport_state.scissorCount = scissors.size() ? scissors.size() : scissor_count;
 			viewport_state.pScissors = scissors.data();
 
 			VkPipelineRasterizationStateCreateInfo rasterizer = {};
@@ -671,7 +726,9 @@ namespace vku
 		VkCullModeFlagBits cull_mode{ VK_CULL_MODE_BACK_BIT  };
 		std::vector<VkPipelineShaderStageCreateInfo> shader_stages{};
 		std::vector<VkViewport> viewports{};
+		uint32_t viewport_count{ 0 };
 		std::vector<VkRect2D> scissors{};
+		uint32_t scissor_count{ 0 };
 		std::vector< VkPipelineColorBlendAttachmentState> color_blend_attachments{};
 
 		VkPipelineLayout pipeline_layout{ VK_NULL_HANDLE };
@@ -847,8 +904,6 @@ namespace vku
 			return Result<Buffer>(Buffer(device, buffer, memory, size, nullptr));
 		}
 	private:
-
-
 		VkDevice device{ VK_NULL_HANDLE };
 		VkPhysicalDevice physical_device;
 	};
@@ -985,5 +1040,47 @@ namespace vku
 		VkDevice device{ VK_NULL_HANDLE };
 		VkQueue queue{ VK_NULL_HANDLE };
 		VkCommandPool command_pool{ VK_NULL_HANDLE };
+	};
+
+
+	class DescriptorSetLayoutBuilder
+	{
+	public:
+		DescriptorSetLayoutBuilder() = delete;
+		DescriptorSetLayoutBuilder(VkDevice d) : device(d) { }
+		~DescriptorSetLayoutBuilder() { }
+
+		inline Result<VkDescriptorSetLayout> build() const
+		{
+			if (device == VK_NULL_HANDLE)
+			{
+				return Result<VkDescriptorSetLayout>(Error{detail::make_error_code(detail::DescriptorSetLayoutError::device_not_provided)});
+			}
+
+			VkDescriptorSetLayoutCreateInfo layoutInfo{};
+			layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+			layoutInfo.bindingCount = bindings.size();
+			layoutInfo.pBindings = bindings.data();
+
+			VkDescriptorSetLayout descriptor_set_layout{ VK_NULL_HANDLE };
+
+			auto vk_result = vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptor_set_layout);
+			if (vk_result != VK_SUCCESS)
+			{
+				return Result<VkDescriptorSetLayout>(Error{ detail::make_error_code(detail::DescriptorSetLayoutError::create_failed), vk_result });
+			}
+
+			return Result<VkDescriptorSetLayout>(descriptor_set_layout);
+		}
+
+		inline DescriptorSetLayoutBuilder& add_binding(uint32_t binding, VkDescriptorType descriptor_type, uint32_t descriptor_count, VkShaderStageFlags stage_flags)
+		{
+			VkDescriptorSetLayoutBinding b{ binding , descriptor_type, descriptor_count, stage_flags, nullptr};
+			bindings.push_back(b);
+			return *this;
+		}
+	private:
+		VkDevice device{ VK_NULL_HANDLE };
+		std::vector< VkDescriptorSetLayoutBinding> bindings{};
 	};
 };

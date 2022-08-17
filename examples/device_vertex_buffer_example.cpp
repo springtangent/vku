@@ -425,8 +425,10 @@ public:
 		pipeline_builder
 			.add_shader_stage(VK_SHADER_STAGE_VERTEX_BIT, vert_module)
 			.add_shader_stage(VK_SHADER_STAGE_FRAGMENT_BIT, frag_module)
-		    .add_viewport(0.0f, 0.0f, (float)vkb_swapchain.extent.width, (float)vkb_swapchain.extent.height, 0.0f, 1.0f)
-		    .add_scissor(0, 0, vkb_swapchain.extent.width, vkb_swapchain.extent.height)
+		    // .add_viewport(0.0f, 0.0f, (float)vkb_swapchain.extent.width, (float)vkb_swapchain.extent.height, 0.0f, 1.0f)
+		    // .add_scissor(0, 0, vkb_swapchain.extent.width, vkb_swapchain.extent.height)
+			.set_viewport_count(1)
+			.set_scissor_count(1)
 			.add_dynamic_state(VK_DYNAMIC_STATE_VIEWPORT)
 			.add_dynamic_state(VK_DYNAMIC_STATE_SCISSOR)
 			.set_pipeline_layout(pipeline_layout)
