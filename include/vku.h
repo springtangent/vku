@@ -367,6 +367,11 @@ namespace vku
 		{
 			return shader_module;
 		}
+
+		inline bool is_valid() const
+		{
+			return device != VK_NULL_HANDLE && shader_module != VK_NULL_HANDLE;
+		}
 	private:
 		inline void clear() noexcept
 		{
