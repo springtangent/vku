@@ -87,7 +87,22 @@ const std::vector<uint16_t> indices = {
 class DeviceVertexBufferExampleApplication : public ExampleApplication
 {
 public:
-	virtual bool create_pipelines() override
+	bool create_pipeline_layouts()
+	{
+		// create pipeline layout
+		vku::PipelineLayoutBuilder pipeline_layout_builder(vkb_device);
+
+		auto pipeline_layout_result = pipeline_layout_builder.build();
+		if (!pipeline_layout_result)
+		{
+			return false;
+		}
+		pipeline_layout = pipeline_layout_result.get_value();
+
+		return true;
+	}
+
+	bool create_pipelines()
 	{
 		vku::ShaderModule vert_module = read_example_shader("triangle_buffer.vert.spv");
 
@@ -230,15 +245,17 @@ public:
 
 	virtual bool populate_command_buffer_render_pass(uint32_t i)
 	{
-		vkCmdBindPipeline(command_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline);
+		VkCommandBuffer command_buffer = command_buffers[i];
+
+		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline);
 
 		VkBuffer vertexBuffers[] = { vertex_buffer };
 		VkDeviceSize offsets[] = { 0 };
-		vkCmdBindVertexBuffers(command_buffers[i], 0, 1, vertexBuffers, offsets);
+		vkCmdBindVertexBuffers(command_buffer, 0, 1, vertexBuffers, offsets);
 
-		vkCmdBindIndexBuffer(command_buffers[i], index_buffer, 0, VK_INDEX_TYPE_UINT16);
+		vkCmdBindIndexBuffer(command_buffer, index_buffer, 0, VK_INDEX_TYPE_UINT16);
 
-		vkCmdDrawIndexed(command_buffers[i], static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
+		vkCmdDrawIndexed(command_buffer, static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
 
 		return true;
 	}
@@ -247,6 +264,16 @@ public:
 	virtual bool on_create()
 	{
 		if (!create_buffers())
+		{
+			return false;
+		}
+
+		if (!create_pipeline_layouts())
+		{
+			return false;
+		}
+
+		if (!create_pipelines())
 		{
 			return false;
 		}
@@ -270,6 +297,9 @@ public:
 	}
 
 private:
+	vku::PipelineLayout pipeline_layout{};
+	vku::Pipeline graphics_pipeline{};
+
 	vku::Buffer vertex_buffer{};
 	vku::Buffer index_buffer{};
 	vku::Buffer staging_buffer{};

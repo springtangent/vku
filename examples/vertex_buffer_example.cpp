@@ -80,7 +80,22 @@ const std::vector<Vertex> vertices{
 class BufferExampleApplication : public ExampleApplication
 {
 public:
-	virtual bool create_pipelines() override
+	bool create_pipeline_layouts()
+	{
+		// create pipeline layout
+		vku::PipelineLayoutBuilder pipeline_layout_builder(vkb_device);
+
+		auto pipeline_layout_result = pipeline_layout_builder.build();
+		if (!pipeline_layout_result)
+		{
+			return false;
+		}
+		pipeline_layout = pipeline_layout_result.get_value();
+
+		return true;
+	}
+
+	bool create_pipelines()
 	{
 		vku::ShaderModule vert_module = read_example_shader("triangle_buffer.vert.spv");
 
@@ -177,7 +192,7 @@ public:
 		vertex_buffer.destroy();
 	}
 
-	virtual bool populate_command_buffer_render_pass(uint32_t i) override
+	virtual bool record_command_buffer_render_pass(uint32_t i) override
 	{
 		vkCmdBindPipeline(command_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline);
 
@@ -192,7 +207,22 @@ public:
 
 	virtual bool on_create() override
 	{
-		return create_vertex_buffer();
+		if (!create_vertex_buffer())
+		{
+			return false;
+		}
+
+		if (!create_pipeline_layouts())
+		{
+			return false;
+		}
+
+		if (!create_pipelines())
+		{
+			return false;
+		}
+
+		return true;
 	}
 
 	virtual void on_destroy() override
@@ -201,6 +231,8 @@ public:
 	}
 private:
 	vku::Buffer vertex_buffer{};
+	vku::PipelineLayout pipeline_layout{};
+	vku::Pipeline graphics_pipeline{};
 };
 
 int main()

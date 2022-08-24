@@ -29,6 +29,7 @@ SOFTWARE.
 #include <vector>
 #include <system_error>
 #include <limits>
+#include <array>
 
 namespace vku
 {
@@ -504,9 +505,9 @@ namespace vku
 	class Pipeline
 	{
 	public:
-		Pipeline() : device(VK_NULL_HANDLE), pipeline(VK_NULL_HANDLE) { }
-		Pipeline(VkDevice d, VkPipeline p) : device(d), pipeline(p) { }
-		Pipeline(Pipeline&& p) noexcept : device(p.device), pipeline(p.pipeline) { p.clear(); }
+		Pipeline() : device(VK_NULL_HANDLE), pipeline(VK_NULL_HANDLE), layout(VK_NULL_HANDLE) { }
+		Pipeline(VkDevice d, VkPipeline p, VkPipelineLayout pl) : device(d), pipeline(p), layout(pl) { }
+		Pipeline(Pipeline&& p) noexcept : device(p.device), pipeline(p.pipeline), layout(p.layout) { p.clear(); }
 		~Pipeline() { destroy(); }
 
 		inline bool is_valid() const
@@ -525,9 +526,10 @@ namespace vku
 
 		inline Pipeline& operator=(Pipeline&& p)
 		{
-			// TODO: if we're valid, should we destroy ourselves?
+			destroy();
 			device = p.device;
 			pipeline = p.pipeline;
+			layout = p.layout;
 			p.clear();
 			return *this;
 		}
@@ -536,14 +538,21 @@ namespace vku
 		{
 			return pipeline;
 		}
+
+		inline VkPipelineLayout get_layout() const
+		{
+			return layout;
+		}
 	private:
 		inline void clear()
 		{
 			device = VK_NULL_HANDLE;
 			pipeline = VK_NULL_HANDLE;
+			layout = VK_NULL_HANDLE;
 		}
 
 		VkDevice device{ VK_NULL_HANDLE };
+		VkPipelineLayout layout{ VK_NULL_HANDLE };
 		VkPipeline pipeline{ VK_NULL_HANDLE };
 	};
 
@@ -599,7 +608,7 @@ namespace vku
 			return *this;
 		}
 
-		inline GraphicsPipelineBuilder& set_cull_mode(VkCullModeFlagBits c)
+		inline GraphicsPipelineBuilder& set_cull_mode(VkCullModeFlags c)
 		{
 			cull_mode = c;
 			return *this;
@@ -642,6 +651,12 @@ namespace vku
 			return *this;
 		}
 
+		inline GraphicsPipelineBuilder& set_front_face(VkFrontFace value)
+		{
+			front_face = value;
+			return *this;
+		}
+
 		inline Result<Pipeline> build() const
 		{
 			if (device == VK_NULL_HANDLE)
@@ -676,8 +691,8 @@ namespace vku
 			rasterizer.rasterizerDiscardEnable = VK_FALSE;
 			rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
 			rasterizer.lineWidth = 1.0f;
-			rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-			rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+			rasterizer.cullMode = cull_mode;
+			rasterizer.frontFace = front_face;
 			rasterizer.depthBiasEnable = VK_FALSE;
 
 			VkPipelineMultisampleStateCreateInfo multisampling = {};
@@ -724,11 +739,12 @@ namespace vku
 			{
 				return Result<Pipeline>(detail::make_error_code(detail::PipelineError::failed_create_pipeline), vk_result);
 			}
-			return  Result<Pipeline>(Pipeline(device, graphics_pipeline));
+			return  Result<Pipeline>(Pipeline(device, graphics_pipeline, pipeline_layout));
 		}
 	private:
 		std::vector<VkDynamicState> dynamic_states{};
-		VkCullModeFlagBits cull_mode{ VK_CULL_MODE_BACK_BIT  };
+		VkCullModeFlags cull_mode{ VK_CULL_MODE_BACK_BIT  };
+		VkFrontFace front_face{ VK_FRONT_FACE_CLOCKWISE };
 		std::vector<VkPipelineShaderStageCreateInfo> shader_stages{};
 		std::vector<VkViewport> viewports{};
 		uint32_t viewport_count{ 0 };
@@ -1047,6 +1063,153 @@ namespace vku
 		VkCommandPool command_pool{ VK_NULL_HANDLE };
 	};
 
+	enum class DescriptorType
+	{
+		SAMPLER = 0,				// VK_DESCRIPTOR_TYPE_SAMPLER = 0,
+		COMBINED_IMAGE_SAMPLER = 1,	// VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER = 1,
+		SAMPLED_IMAGE = 2,			// VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE = 2,
+		STORAGE_IMAGE = 3,			// VK_DESCRIPTOR_TYPE_STORAGE_IMAGE = 3,
+		UNIFORM_TEXEL_BUFFER = 4,	// VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER = 4,
+		STORAGE_TEXEL_BUFFER = 5,	// VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER = 5,
+		UNIFORM_BUFFER = 6,			// VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER = 6,
+		STORAGE_BUFFER = 7,			// VK_DESCRIPTOR_TYPE_STORAGE_BUFFER = 7,
+		UNIFORM_BUFFER_DYNAMIC = 8, // VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC = 8,
+		STORAGE_BUFFER_DYNAMIC = 9, // VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC = 9,
+		INPUT_ATTACHMENT = 10,		// VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT = 10,
+
+		/*
+		// Provided by VK_VERSION_1_3
+		INLINE_UNIFORM_BLOCK = 11,  // VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK = 1000138000,
+		// Provided by VK_KHR_acceleration_structure
+		ACCELERATION_STRUCTURE_KHR = 12, // VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR = 1000150000,
+		// Provided by VK_NV_ray_tracing
+		ACCELERATION_STRUCTURE_NV = 13, // VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV = 1000165000,
+		// Provided by VK_VALVE_mutable_descriptor_type
+		MUTABLE_VALVE = 14, // VK_DESCRIPTOR_TYPE_MUTABLE_VALVE = 1000351000,
+		// Provided by VK_QCOM_image_processing
+		SAMPLE_WEIGHT_IMAGE_QCOM = 15, // VK_DESCRIPTOR_TYPE_SAMPLE_WEIGHT_IMAGE_QCOM = 1000440000,
+		// Provided by VK_QCOM_image_processing
+		BLOCK_MATCH_IMAGE_QCOM = 16, // VK_DESCRIPTOR_TYPE_BLOCK_MATCH_IMAGE_QCOM = 1000440001,
+		// Provided by VK_EXT_inline_uniform_block
+		INLINE_UNIFORM_BLOCK_EXT = INLINE_UNIFORM_BLOCK,
+		*/
+		MAX = INPUT_ATTACHMENT + 1
+	};
+
+	DescriptorType from_vk(VkDescriptorType t)
+	{
+		switch (t)
+		{
+		case(VK_DESCRIPTOR_TYPE_SAMPLER):
+			return DescriptorType::SAMPLER;
+		case(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER):
+			return DescriptorType::COMBINED_IMAGE_SAMPLER;
+		case(VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE):
+			return DescriptorType::SAMPLED_IMAGE;
+		case(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE):
+			return DescriptorType::STORAGE_IMAGE;
+		case(VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER):
+			return DescriptorType::UNIFORM_TEXEL_BUFFER;
+		case(VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER):
+			return DescriptorType::STORAGE_TEXEL_BUFFER;
+		case(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER):
+			return DescriptorType::UNIFORM_BUFFER;
+		case(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER):
+			return DescriptorType::STORAGE_BUFFER;
+		case(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC):
+			return DescriptorType::UNIFORM_BUFFER_DYNAMIC;
+		case(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC):
+			return DescriptorType::STORAGE_BUFFER_DYNAMIC;
+		case(VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT):
+			return DescriptorType::INPUT_ATTACHMENT;
+		}
+	}
+
+	VkDescriptorType to_vk(DescriptorType t)
+	{
+		switch (t)
+		{
+		case(DescriptorType::SAMPLER):
+			return VK_DESCRIPTOR_TYPE_SAMPLER;
+		case(DescriptorType::COMBINED_IMAGE_SAMPLER):
+			return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		case(DescriptorType::SAMPLED_IMAGE):
+			return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+		case(DescriptorType::STORAGE_IMAGE):
+			return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+		case(DescriptorType::UNIFORM_TEXEL_BUFFER):
+			return VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
+		case(DescriptorType::STORAGE_TEXEL_BUFFER):
+			return VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
+		case(DescriptorType::UNIFORM_BUFFER):
+			return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		case(DescriptorType::STORAGE_BUFFER):
+			return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		case(DescriptorType::UNIFORM_BUFFER_DYNAMIC):
+			return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+		case(DescriptorType::STORAGE_BUFFER_DYNAMIC):
+			return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
+		case(DescriptorType::INPUT_ATTACHMENT):
+			return VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+		}
+	}
+
+	using DescriptorTypeCounts = std::array<uint16_t, static_cast<size_t>(DescriptorType::MAX)>;
+
+	class DescriptorSetLayout
+	{
+	public:
+		DescriptorSetLayout() : device(VK_NULL_HANDLE), value(VK_NULL_HANDLE), descriptor_pool(VK_NULL_HANDLE), descriptor_type_counts() { }
+		DescriptorSetLayout(VkDevice d, VkDescriptorSetLayout ds, const DescriptorTypeCounts& dsc) : device(d), value(ds), descriptor_type_counts(dsc) { }
+		DescriptorSetLayout(const DescriptorSetLayout& value) = delete;
+		DescriptorSetLayout(DescriptorSetLayout&& value) : device(value.device), value(value.value), descriptor_pool(value.descriptor_pool), descriptor_type_counts(value.descriptor_type_counts)
+		{
+			value.clear();
+		}
+
+		~DescriptorSetLayout() { destroy(); }
+
+		inline void destroy()
+		{
+			if (VK_NULL_HANDLE != device)
+			{
+				vkDestroyDescriptorSetLayout(device, value, nullptr);
+			}
+			
+			clear();
+		}
+
+		inline operator VkDescriptorSetLayout() const
+		{
+			return value;
+		}
+
+		inline DescriptorSetLayout& operator=(DescriptorSetLayout&& s)
+		{
+			destroy();
+			device = s.device;
+			value = s.value;
+			descriptor_pool = s.descriptor_pool;
+			descriptor_type_counts = s.descriptor_type_counts;
+			s.clear();
+			return *this;
+		}
+	private:
+		inline void clear()
+		{
+			value = VK_NULL_HANDLE;
+			device = VK_NULL_HANDLE;
+			descriptor_pool = VK_NULL_HANDLE;
+			descriptor_type_counts = {};
+		}
+		VkDevice device{ VK_NULL_HANDLE };
+		VkDescriptorSetLayout value{ VK_NULL_HANDLE };
+		VkDescriptorPool descriptor_pool{ VK_NULL_HANDLE };
+		DescriptorTypeCounts descriptor_type_counts{};
+
+		friend class DescriptorPoolBuilder; // allow access to descriptor_type_counts
+	};
+
 
 	class DescriptorSetLayoutBuilder
 	{
@@ -1055,11 +1218,11 @@ namespace vku
 		DescriptorSetLayoutBuilder(VkDevice d) : device(d) { }
 		~DescriptorSetLayoutBuilder() { }
 
-		inline Result<VkDescriptorSetLayout> build() const
+		inline Result<DescriptorSetLayout> build() const
 		{
 			if (device == VK_NULL_HANDLE)
 			{
-				return Result<VkDescriptorSetLayout>(Error{detail::make_error_code(detail::DescriptorSetLayoutError::device_not_provided)});
+				return Result<DescriptorSetLayout>(Error{detail::make_error_code(detail::DescriptorSetLayoutError::device_not_provided)});
 			}
 
 			VkDescriptorSetLayoutCreateInfo layoutInfo{};
@@ -1072,20 +1235,220 @@ namespace vku
 			auto vk_result = vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptor_set_layout);
 			if (vk_result != VK_SUCCESS)
 			{
-				return Result<VkDescriptorSetLayout>(Error{ detail::make_error_code(detail::DescriptorSetLayoutError::create_failed), vk_result });
+				return Result<DescriptorSetLayout>(Error{ detail::make_error_code(detail::DescriptorSetLayoutError::create_failed), vk_result });
 			}
 
-			return Result<VkDescriptorSetLayout>(descriptor_set_layout);
+			return Result<DescriptorSetLayout>(std::move(DescriptorSetLayout(device, descriptor_set_layout, descriptor_type_counts)));
 		}
 
 		inline DescriptorSetLayoutBuilder& add_binding(uint32_t binding, VkDescriptorType descriptor_type, uint32_t descriptor_count, VkShaderStageFlags stage_flags)
 		{
 			VkDescriptorSetLayoutBinding b{ binding , descriptor_type, descriptor_count, stage_flags, nullptr};
+			return add_binding(b);
+		}
+
+		inline DescriptorSetLayoutBuilder& add_binding(VkDescriptorSetLayoutBinding b)
+		{
 			bindings.push_back(b);
+			auto t = from_vk(b.descriptorType);
+			// TODO: check this, I don't think decriptorCount always works like this...
+			descriptor_type_counts[static_cast<uint16_t>(t)] += b.descriptorCount;
 			return *this;
 		}
 	private:
 		VkDevice device{ VK_NULL_HANDLE };
-		std::vector< VkDescriptorSetLayoutBinding> bindings{};
+		std::vector<VkDescriptorSetLayoutBinding> bindings{};
+		DescriptorTypeCounts descriptor_type_counts{};
+	};
+
+
+	class DescriptorPoolBuilder
+	{
+	public:
+		DescriptorPoolBuilder() = delete;
+		DescriptorPoolBuilder(VkDevice d) : device(d) { }
+		
+		inline DescriptorPoolBuilder& add_descriptor_sets(const DescriptorSetLayout &set_layout, uint32_t count=1)
+		{
+			max_sets += count;
+			for (uint16_t i = 0; i < static_cast<size_t>(DescriptorType::MAX); ++i)
+			{
+				descriptor_type_counts[i] += set_layout.descriptor_type_counts[i] * count;
+			}
+			return *this;
+		}
+
+		inline Result<VkDescriptorPool> build() const
+		{
+			VkDescriptorPool result{ VK_NULL_HANDLE };
+
+			std::vector<VkDescriptorPoolSize> pool_sizes{};
+			for (uint16_t i = 0; i < static_cast<size_t>(DescriptorType::MAX); ++i)
+			{
+				if (descriptor_type_counts[i] > 0)
+				{
+					VkDescriptorPoolSize pool_size{};
+					pool_size.type = to_vk(static_cast<DescriptorType>(i));
+					pool_size.descriptorCount = descriptor_type_counts[i];
+					pool_sizes.push_back(pool_size);
+				}
+			}
+
+			VkDescriptorPoolCreateInfo create_info{};
+			create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+			create_info.maxSets = max_sets;
+			create_info.poolSizeCount = pool_sizes.size();
+			create_info.pPoolSizes = pool_sizes.data();
+
+			auto vk_result = vkCreateDescriptorPool(device, &create_info, nullptr, &result);
+
+			if (vk_result != VK_SUCCESS)
+			{
+				// TODO: error and stuff
+			}
+
+			return Result<VkDescriptorPool>(result);
+		}
+	private:
+		VkDevice device{ VK_NULL_HANDLE };
+		uint32_t max_sets{ 0 };
+		DescriptorTypeCounts descriptor_type_counts{};
+	};
+
+	class DescriptorSetBuilder
+	{
+	public:
+		DescriptorSetBuilder(VkDevice _device, VkDescriptorPool _descriptor_pool, VkDescriptorSetLayout _layout) : device(_device), descriptor_pool(_descriptor_pool), layout(_layout) { }
+		~DescriptorSetBuilder() = default;
+
+		inline bool is_valid() const { return device != VK_NULL_HANDLE; }
+
+		inline DescriptorSetBuilder& write_uniform_buffer(uint32_t binding, uint32_t array_element, VkBuffer buffer, VkDeviceSize offset, VkDeviceSize range)
+		{
+			UniformBufferWrite write{};
+			write.binding = binding;
+			write.array_element = array_element;
+			write.buffer = buffer;
+			write.offset = offset;
+			write.range = range;
+			uniform_buffer_writes.push_back(write);
+			return *this;
+		}
+
+		inline DescriptorSetBuilder& write_combined_image_sampler(uint32_t binding, uint32_t array_element, VkSampler sampler, VkImageView image_view, VkImageLayout image_layout)
+		{
+			CombinedImageSamplerWrite write{};
+			write.binding = binding;
+			write.array_element = array_element;
+			write.sampler = sampler;
+			write.image_view = image_view;
+			write.image_layout = image_layout;
+			combined_image_sampler_writes.push_back(write);
+			return *this;
+		}
+
+		inline Result<VkDescriptorSet> build() const
+		{
+			// allocate the descriptor sets.
+			VkDescriptorSetAllocateInfo alloc_info{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+
+			alloc_info.descriptorPool = descriptor_pool;
+			alloc_info.descriptorSetCount = 1;
+			alloc_info.pSetLayouts = &layout;
+
+			VkDescriptorSet result{ VK_NULL_HANDLE };
+			auto vk_result = vkAllocateDescriptorSets(device, &alloc_info, &result);
+
+			if (vk_result != VK_SUCCESS)
+			{
+				// return res;
+				// TODO: error case.
+			}
+
+			// write the descriptor sets
+			VkWriteDescriptorSet w{};
+			w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			w.dstSet = result;
+			std::vector<VkWriteDescriptorSet> writes(uniform_buffer_writes.size() + combined_image_sampler_writes.size(), w);
+
+			// populate the bufferinfos
+			std::vector<VkDescriptorBufferInfo> buffer_infos(uniform_buffer_writes.size());
+
+			// populate the buffer writes
+			uint32_t write_index = 0;
+			uint32_t buffer_index = 0;
+			for (const auto &uniform_buffer_write: uniform_buffer_writes)
+			{
+				uniform_buffer_write.populate(writes[write_index], buffer_infos[buffer_index]);
+				buffer_index += 1;
+				write_index += 1;
+			}
+
+			// populate the image_infos
+			std::vector<VkDescriptorImageInfo> image_infos(combined_image_sampler_writes.size());
+
+			// populate the image writes
+			uint32_t image_index = 0;
+			for (const auto &combined_image_sampler_write: combined_image_sampler_writes)
+			{
+				combined_image_sampler_write.populate(writes[write_index], image_infos[image_index]);
+				image_index += 1;
+				write_index += 1;
+			}
+
+			// perform the writes
+			vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+
+			return Result<VkDescriptorSet>(result);
+		}
+	private:
+		struct UniformBufferWrite
+		{
+			uint32_t binding;
+			uint32_t array_element;
+			VkBuffer buffer;
+			VkDeviceSize offset;
+			VkDeviceSize range;
+
+			inline void populate(VkWriteDescriptorSet& write, VkDescriptorBufferInfo& buffer_info) const
+			{
+				write.pBufferInfo = &buffer_info;
+				write.descriptorCount = 1;
+				write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+				write.dstArrayElement = array_element;
+
+				buffer_info.buffer = buffer;
+				buffer_info.offset = offset;
+				buffer_info.range = range;
+			}
+		};
+
+		struct CombinedImageSamplerWrite
+		{
+			uint32_t binding;
+			uint32_t array_element;
+			VkSampler sampler;
+			VkImageView image_view;
+			VkImageLayout image_layout;
+
+			inline void populate(VkWriteDescriptorSet& write, VkDescriptorImageInfo &image_info) const
+			{
+				write.pImageInfo = &image_info;
+				write.descriptorCount = 1;
+				write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+				write.dstArrayElement = array_element;
+
+				image_info.imageLayout = image_layout;
+				image_info.imageView = image_view;
+				image_info.sampler = sampler;
+			}
+		};
+
+		VkDevice device{ VK_NULL_HANDLE };
+		VkDescriptorSetLayout layout{ VK_NULL_HANDLE };
+		VkDescriptorPool descriptor_pool{ VK_NULL_HANDLE };
+
+		std::vector<UniformBufferWrite> uniform_buffer_writes{};
+		std::vector<CombinedImageSamplerWrite> combined_image_sampler_writes{};
 	};
 };
