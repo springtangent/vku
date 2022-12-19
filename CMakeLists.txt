@@ -5,6 +5,8 @@ project(vku_examples VERSION 1.0
                      LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Vulkan)
 
@@ -23,6 +25,7 @@ set(VKU_EXAMPLES_EXTERN_DIR "extern")
 
 add_subdirectory("${VKU_EXAMPLES_EXTERN_DIR}/glfw")
 add_subdirectory("${VKU_EXAMPLES_EXTERN_DIR}/vk-bootstrap")
+add_subdirectory("${VKU_EXAMPLES_EXTERN_DIR}/pybind11")
 include_directories("${VKU_EXAMPLES_EXTERN_DIR}/glm")
 
 include_directories(include ${Vulkan_INCLUDE_DIRS})
@@ -39,3 +42,14 @@ target_link_libraries(vku_device_buffer_example PRIVATE ${Vulkan_LIBRARIES} glfw
 
 add_executable(vku_uniform_buffer_example examples/uniform_buffer_example.cpp)
 target_link_libraries(vku_uniform_buffer_example PRIVATE ${Vulkan_LIBRARIES} glfw vk-bootstrap::vk-bootstrap)
+
+# find_package(pybind11 REQUIRED)
+# pybind11_add_module(vku_examples source/pyvku.cpp)
+
+add_library(pyvku MODULE source/pyvku.cpp)
+target_link_libraries(pyvku PRIVATE pybind11::module pybind11::lto pybind11::windows_extras ${Vulkan_LIBRARIES} vk-bootstrap::vk-bootstrap glfw)
+pybind11_extension(pyvku)
+if(NOT MSVC AND NOT ${CMAKE_BUILD_TYPE} MATCHES Debug|RelWithDebInfo)
+    # Strip unnecessary sections of the binary on Linux/macOS
+    pybind11_strip(pyvku)
+endif()

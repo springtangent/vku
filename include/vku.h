@@ -1093,7 +1093,8 @@ namespace vku
 		// Provided by VK_EXT_inline_uniform_block
 		INLINE_UNIFORM_BLOCK_EXT = INLINE_UNIFORM_BLOCK,
 		*/
-		MAX = INPUT_ATTACHMENT + 1
+		MAX = INPUT_ATTACHMENT + 1,
+		UNKNOWN = MAX + 1
 	};
 
 	DescriptorType from_vk(VkDescriptorType t)
@@ -1123,6 +1124,8 @@ namespace vku
 		case(VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT):
 			return DescriptorType::INPUT_ATTACHMENT;
 		}
+
+		return DescriptorType::UNKNOWN;
 	}
 
 	VkDescriptorType to_vk(DescriptorType t)
@@ -1152,6 +1155,8 @@ namespace vku
 		case(DescriptorType::INPUT_ATTACHMENT):
 			return VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
 		}
+
+		return VK_DESCRIPTOR_TYPE_MAX_ENUM;
 	}
 
 	using DescriptorTypeCounts = std::array<uint16_t, static_cast<size_t>(DescriptorType::MAX)>;

@@ -2,7 +2,7 @@ import os
 import os.path
 
 
-VULKAN_GLSLC_EXECUTABLE = "C:/VulkanSDK/1.2.198.1/Bin/glslc.exe" # os.environ.get("Vulkan_GLSLC_EXECUTABLE")
+VULKAN_GLSLC_EXECUTABLE = "C:/VulkanSDK/1.3.236.0/Bin/glslc.exe" # os.environ.get("Vulkan_GLSLC_EXECUTABLE")
 
 RESOURCE_PATH = "resources"
 BUILD_ASSET_PATH = os.path.join("build", "resources")
