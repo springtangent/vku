@@ -336,7 +336,6 @@ namespace vku
 	};
 
 
-	// RAII shader module class
 	class ShaderModule
 	{
 	public:
@@ -344,25 +343,7 @@ namespace vku
 
 		ShaderModule(VkDevice d, VkShaderModule s) : device(d), shader_module(s) { }
 
-		ShaderModule(ShaderModule &&s) noexcept : device(s.device), shader_module(s.shader_module)
-		{
-			s.clear();
-		}
-
-		ShaderModule(const ShaderModule& s) = delete;
-
-		~ShaderModule()
-		{
-			destroy();
-		}
-
-		inline ShaderModule& operator=(ShaderModule&& s)
-		{
-			device = s.device;
-			shader_module = s.shader_module;
-			s.clear();
-			return *this;
-		}
+		ShaderModule(const ShaderModule& s) : device(s.device), shader_module(s.shader_module) { }
 
 		inline operator VkShaderModule() const
 		{
@@ -373,7 +354,7 @@ namespace vku
 		{
 			return device != VK_NULL_HANDLE && shader_module != VK_NULL_HANDLE;
 		}
-	private:
+
 		inline void clear() noexcept
 		{
 			device = VK_NULL_HANDLE;
@@ -389,12 +370,14 @@ namespace vku
 			clear();
 		}
 
+	private:
 		VkDevice device{ VK_NULL_HANDLE };
 		VkShaderModule shader_module{ VK_NULL_HANDLE };
 	};
 
 
-	inline Result<ShaderModule> create_shader_module(VkDevice device, const std::vector<char>& code)
+
+	inline Result<ShaderModule> create_shader_module(VkDevice device, const uint32_t *code, VkDeviceSize size)
 	{
 		if (VK_NULL_HANDLE == device)
 		{
@@ -402,8 +385,8 @@ namespace vku
 		}
 		VkShaderModuleCreateInfo create_info = {};
 		create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-		create_info.codeSize = code.size();
-		create_info.pCode = reinterpret_cast<const uint32_t*> (code.data());
+		create_info.codeSize = size;
+		create_info.pCode = code;
 
 		VkShaderModule shader_module{ VK_NULL_HANDLE };
 		VkResult vk_result = vkCreateShaderModule(device, &create_info, nullptr, &shader_module);
@@ -417,6 +400,12 @@ namespace vku
 	}
 
 
+	inline Result<ShaderModule> create_shader_module(VkDevice device, const std::vector<char>& code)
+	{
+		return create_shader_module(device, reinterpret_cast<const uint32_t*>(code.data()), code.size());
+	}
+
+
 	class PipelineLayout
 	{
 	public:
@@ -424,22 +413,9 @@ namespace vku
 
 		PipelineLayout(VkDevice d, VkPipelineLayout s) : device(d), pipeline_layout(s) { }
 
-		PipelineLayout(PipelineLayout&& p) noexcept : device(p.device), pipeline_layout(p.pipeline_layout)
-		{
-			p.clear();
-		}
+		PipelineLayout(const PipelineLayout& p) noexcept : device(p.device), pipeline_layout(p.pipeline_layout) { }
 
-		PipelineLayout(const PipelineLayout& s) = delete;
-
-		~PipelineLayout() { destroy(); }
-
-		inline PipelineLayout& operator=(PipelineLayout&& p)
-		{
-			device = p.device;
-			pipeline_layout = p.pipeline_layout;
-			p.clear();
-			return *this;
-		}
+		~PipelineLayout() {  }
 
 		inline operator VkPipelineLayout() const
 		{
@@ -454,13 +430,13 @@ namespace vku
 			}
 			clear();
 		}
-	private:
 
 		inline void clear()
 		{
 			device = VK_NULL_HANDLE;
 			pipeline_layout = VK_NULL_HANDLE;
 		}
+	private:
 
 		VkDevice device{ VK_NULL_HANDLE };
 		VkPipelineLayout pipeline_layout{ VK_NULL_HANDLE };
@@ -506,9 +482,12 @@ namespace vku
 	{
 	public:
 		Pipeline() : device(VK_NULL_HANDLE), pipeline(VK_NULL_HANDLE), layout(VK_NULL_HANDLE) { }
+
 		Pipeline(VkDevice d, VkPipeline p, VkPipelineLayout pl) : device(d), pipeline(p), layout(pl) { }
-		Pipeline(Pipeline&& p) noexcept : device(p.device), pipeline(p.pipeline), layout(p.layout) { p.clear(); }
-		~Pipeline() { destroy(); }
+
+		Pipeline(const Pipeline& p) noexcept : device(p.device), pipeline(p.pipeline), layout(p.layout) { }
+
+		~Pipeline() { }
 
 		inline bool is_valid() const
 		{
@@ -524,16 +503,6 @@ namespace vku
 			clear();
 		}
 
-		inline Pipeline& operator=(Pipeline&& p)
-		{
-			destroy();
-			device = p.device;
-			pipeline = p.pipeline;
-			layout = p.layout;
-			p.clear();
-			return *this;
-		}
-
 		inline operator VkPipeline() const
 		{
 			return pipeline;
@@ -543,14 +512,14 @@ namespace vku
 		{
 			return layout;
 		}
-	private:
+
 		inline void clear()
 		{
 			device = VK_NULL_HANDLE;
 			pipeline = VK_NULL_HANDLE;
 			layout = VK_NULL_HANDLE;
 		}
-
+	private:
 		VkDevice device{ VK_NULL_HANDLE };
 		VkPipelineLayout layout{ VK_NULL_HANDLE };
 		VkPipeline pipeline{ VK_NULL_HANDLE };
@@ -574,17 +543,16 @@ namespace vku
 			return *this;
 		}
 
-		inline GraphicsPipelineBuilder& add_viewport(float x, float y, float width, float height, float min_depth, float max_depth)
+		inline GraphicsPipelineBuilder& add_viewport(VkViewport& viewport)
 		{
-			VkViewport viewport = {};
-			viewport.x = x;
-			viewport.y = y;
-			viewport.width = width;
-			viewport.height = height;
-			viewport.minDepth = 0.0f;
-			viewport.maxDepth = 1.0f;
 			viewports.push_back(viewport);
 			return *this;
+		}
+
+		inline GraphicsPipelineBuilder& add_viewport(float x, float y, float width, float height, float min_depth, float max_depth)
+		{
+			VkViewport viewport = { x, y, width,height, min_depth, max_depth };
+			return add_viewport(viewport);
 		}
 
 		inline GraphicsPipelineBuilder& set_viewport_count(uint32_t count)
@@ -593,13 +561,16 @@ namespace vku
 			return *this;
 		}
 
-		inline GraphicsPipelineBuilder& add_scissor(int32_t offsetx, int32_t offsety, uint32_t extentx, uint32_t extenty)
+		inline GraphicsPipelineBuilder& add_scissor(VkRect2D scissor)
 		{
-			VkRect2D scissor{};
-			scissor.offset = { offsetx, offsety };
-			scissor.extent = { extentx, extenty };
 			scissors.push_back(scissor);
 			return *this;
+		}
+
+		inline GraphicsPipelineBuilder& add_scissor(int32_t offsetx, int32_t offsety, uint32_t extentx, uint32_t extenty)
+		{
+			VkRect2D scissor{ { offsetx, offsety }, { extentx, extenty } };
+			return add_scissor(scissor);
 		}
 
 		inline GraphicsPipelineBuilder& set_scissor_count(uint32_t count)
@@ -767,23 +738,10 @@ namespace vku
 	{
 	public:
 		Buffer(VkDevice d=VK_NULL_HANDLE, VkBuffer b = VK_NULL_HANDLE, VkDeviceMemory m = VK_NULL_HANDLE, VkDeviceSize s=0, void *map=nullptr) : device(d), buffer(b), memory(m), size(s), mapped(map) { }
-		Buffer(Buffer&& d) : device(d.device), buffer(d.buffer), memory(d.memory), size(d.size), mapped(d.mapped)
-		{ 
-			d.clear();
-		}
-		~Buffer() { destroy(); }
-
-		inline Buffer& operator=(Buffer&& b) noexcept
-		{
-			// TODO: if we're valid, should we destroy ourselves? It seems like we leak if we don't.
-			device = b.device;
-			buffer = b.buffer;
-			memory = b.memory;
-			size = b.size;
-			mapped = b.mapped;
-			b.clear();
-			return *this;
-		}
+		
+		Buffer(const Buffer& d) : device(d.device), buffer(d.buffer), memory(d.memory), size(d.size), mapped(d.mapped) { }
+		
+		~Buffer() { }
 
 		inline operator VkBuffer() const
 		{
@@ -826,7 +784,7 @@ namespace vku
 			vkUnmapMemory(device, memory);
 			mapped = nullptr;
 		}
-	private:
+
 		inline void clear()
 		{
 			device = VK_NULL_HANDLE;
@@ -835,7 +793,7 @@ namespace vku
 			size = 0;
 			mapped = nullptr;
 		}
-
+	private:
 		VkDevice device{ VK_NULL_HANDLE };
 		VkBuffer buffer{ VK_NULL_HANDLE };
 		VkDeviceMemory memory{ VK_NULL_HANDLE };
@@ -928,7 +886,6 @@ namespace vku
 		VkDevice device{ VK_NULL_HANDLE };
 		VkPhysicalDevice physical_device;
 	};
-
 
 	class SingleTimeCommandExecutor
 	{

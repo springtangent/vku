@@ -8,6 +8,7 @@
 #include <vku.h>
 
 #include <stdexcept>
+#include <tuple>
 
 namespace py = pybind11;
 
@@ -53,6 +54,71 @@ class CommandPool : public VkHandle<VkCommandPool> { };
 class CommandBuffer : public VkHandle<VkCommandBuffer> { };
 class Semaphore : public VkHandle<VkSemaphore> { };
 class Fence : public VkHandle<VkFence> { };
+class DescriptorSetLayout : public VkHandle<VkDescriptorSetLayout> { };
+
+
+template<typename T>
+class VKUWrapper
+{
+public:
+    void clear()
+    {
+        value.clear();
+    }
+
+    void destroy()
+    {
+        value.destroy();
+    }
+
+    bool is_valid() const
+    {
+        return value.is_valid();
+    }
+
+    T value{};
+};
+
+
+class ShaderModule : public VKUWrapper<vku::ShaderModule>
+{
+public:
+};
+
+
+class PipelineLayout : public VKUWrapper<vku::PipelineLayout>
+{
+public:
+};
+
+
+class Pipeline : public VKUWrapper<vku::Pipeline>
+{
+public:
+};
+
+
+class Buffer : public VKUWrapper<vku::Buffer>
+{
+public:
+    operator VkBuffer() const { return (VkBuffer)value; }
+
+    void map_memory(VkDeviceSize size=VK_WHOLE_SIZE, VkDeviceSize offset=0)
+    {
+        auto vk_result = value.map_memory(size, offset);
+        // TODO: handle error
+    }
+
+    void unmap_memory()
+    {
+        value.unmap_memory();
+    }
+
+    py::memoryview get_mapped()
+    {
+        return py::memoryview::from_memory(value.get_mapped(), value.get_size());
+    }
+};
 
 
 template<typename H, typename W>
@@ -255,11 +321,35 @@ public:
         return *this;
     }
 
+    PhysicalDeviceSelector& prefer_gpu_device_type(vkb::PreferredDeviceType tp)
+    {
+        physical_device_selector.prefer_gpu_device_type(tp);
+        return *this;
+    }
+
+    PhysicalDeviceSelector& allow_any_gpu_device_type(bool allow)
+    {
+        physical_device_selector.allow_any_gpu_device_type(allow);
+        return *this;
+    }
+
     PhysicalDevice select()
     {
         auto result = physical_device_selector.select();
         auto physical_device = result.value();
         return PhysicalDevice(physical_device);
+    }
+
+    std::vector<PhysicalDevice> select_devices()
+    {
+        auto result = physical_device_selector.select_devices();
+        auto physical_devices = result.value();
+        std::vector<PhysicalDevice> results;
+        for (uint32_t i = 0; i < physical_devices.size(); ++i)
+        {
+            results.push_back(PhysicalDevice(physical_devices[i]));
+        }
+        return results;
     }
 };
 
@@ -900,6 +990,196 @@ void end_command_buffer(const CommandBuffer& command_buffer)
     vkEndCommandBuffer(command_buffer);
 }
 
+void cmd_bind_pipeline(const CommandBuffer& command_buffer, VkPipelineBindPoint bind_point, const Pipeline &pipeline)
+{
+    vkCmdBindPipeline(command_buffer, bind_point, pipeline.value);
+}
+
+
+void cmd_bind_vertex_buffers(const CommandBuffer& command_buffer, uint32_t first_binding, uint32_t binding_count, std::vector<Buffer> buffers, std::vector<VkDeviceSize> offsets)
+{
+    // TODO: boudns checking for everything.
+    std::vector<VkBuffer> bufs = get_handles<VkBuffer>(buffers);
+    vkCmdBindVertexBuffers(command_buffer, first_binding, binding_count, bufs.data(), offsets.data());
+}
+
+
+class PipelineLayoutBuilder
+{
+public:
+    PipelineLayoutBuilder(Device& device) : pipeline_layout_builder(device.device) { }
+
+    PipelineLayoutBuilder& add_descriptor_set(const DescriptorSetLayout& layout)
+    {
+        pipeline_layout_builder.add_descriptor_set(layout);
+        return *this;
+    }
+
+    PipelineLayout build() const
+    {
+        // PipelineLayout pipeline_layout(pipeline_layout_builder.device, VK_NULL_HANDLE)
+
+        auto result = pipeline_layout_builder.build();
+
+        // TODO: error handling.
+
+        return PipelineLayout{ result.get_value() };
+    }
+
+    vku::PipelineLayoutBuilder pipeline_layout_builder;
+};
+
+
+ShaderModule create_shader_module(const Device &device, py::buffer data)
+{
+    ShaderModule result{};
+    py::buffer_info info = data.request();
+    auto shader_module_result = vku::create_shader_module(device.device, reinterpret_cast<const uint32_t *>(info.ptr), info.size * info.itemsize);
+    
+    // TODO: error handling;
+
+    result.value = shader_module_result.get_value();
+
+    return result;
+}
+
+
+class GraphicsPipelineBuilder
+{
+public:
+    GraphicsPipelineBuilder(const Device& device) : graphics_pipeline_builder(device.device) { }
+
+    GraphicsPipelineBuilder& add_shader_stage(VkShaderStageFlagBits stage, ShaderModule module)
+    {
+        graphics_pipeline_builder.add_shader_stage(stage, module.value, "main");
+        return *this;
+    }
+
+    GraphicsPipelineBuilder& add_scissor(VkRect2D scissor)
+    {
+        graphics_pipeline_builder.add_scissor(scissor);
+        return *this;
+    }
+
+    GraphicsPipelineBuilder& add_viewport(VkViewport viewport)
+    {
+        graphics_pipeline_builder.add_viewport(viewport);
+        return *this;
+    }
+
+    GraphicsPipelineBuilder& add_dynamic_state(VkDynamicState s)
+    {
+        graphics_pipeline_builder.add_dynamic_state(s);
+        return *this;
+    }
+
+    GraphicsPipelineBuilder& set_pipeline_layout(PipelineLayout &p)
+    {
+        graphics_pipeline_builder.set_pipeline_layout(p.value);
+        return *this;
+    }
+
+    GraphicsPipelineBuilder& set_render_pass(RenderPass& rp)
+    {
+        graphics_pipeline_builder.set_render_pass(rp.handle);
+        return *this;
+    }
+
+    GraphicsPipelineBuilder& add_color_blend_attachment(VkPipelineColorBlendAttachmentState &c)
+    {
+        graphics_pipeline_builder.add_color_blend_attachment(c);
+        return *this;
+    }
+
+    GraphicsPipelineBuilder& add_vertex_binding(VkVertexInputBindingDescription &desc)
+    {
+        graphics_pipeline_builder.add_vertex_binding(desc);
+        return *this;
+    }
+    
+    GraphicsPipelineBuilder& add_vertex_attributes(std::vector<VkVertexInputAttributeDescription>& descs)
+    {
+        graphics_pipeline_builder.add_vertex_attributes(descs);
+        return *this;
+    }
+
+    Pipeline build()
+    {
+        auto res = graphics_pipeline_builder.build();
+
+        // TODO: error handling
+
+        Pipeline result{ res.get_value() };
+        return result;
+    }
+
+    vku::GraphicsPipelineBuilder graphics_pipeline_builder;
+};
+
+
+class BufferFactory
+{
+public:
+    BufferFactory(const Device& device, const PhysicalDevice& physical_device) : buffer_factory(device.device, physical_device.physical_device) { }
+
+    Buffer build(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags memory_properties)
+    {
+        auto res = buffer_factory.build(size, usage, memory_properties);
+
+        // TODO; error handling
+
+        Buffer result;
+        result.value = res.get_value();
+
+        return result;
+    }
+
+    vku::BufferFactory buffer_factory;
+};
+
+
+std::set<std::string> get_supported_extensions() {
+    uint32_t count;
+    vkEnumerateInstanceExtensionProperties(nullptr, &count, nullptr); //get number of extensions
+    std::vector<VkExtensionProperties> extensions(count);
+    vkEnumerateInstanceExtensionProperties(nullptr, &count, extensions.data()); //populate buffer
+    std::set<std::string> results;
+    for (auto& extension : extensions) {
+        results.insert(extension.extensionName);
+    }
+    return results;
+}
+
+
+std::tuple<uint32_t, uint32_t, uint32_t> get_vulkan_version()
+{
+    uint32_t instanceVersion = VK_API_VERSION_1_0;
+    auto FN_vkEnumerateInstanceVersion = PFN_vkEnumerateInstanceVersion(vkGetInstanceProcAddr(nullptr, "vkEnumerateInstanceVersion"));
+    if (vkEnumerateInstanceVersion) {
+        vkEnumerateInstanceVersion(&instanceVersion);
+    }
+
+    // 3 macros to extract version info
+    uint32_t major = VK_VERSION_MAJOR(instanceVersion);
+    uint32_t minor = VK_VERSION_MINOR(instanceVersion);
+    uint32_t patch = VK_VERSION_PATCH(instanceVersion);
+
+    return std::tuple<uint32_t, uint32_t, uint32_t>(major, minor, patch);
+}
+
+VkPhysicalDeviceProperties get_physical_device_properties(const PhysicalDevice& physical_device)
+{
+    VkPhysicalDeviceProperties result{};
+    vkGetPhysicalDeviceProperties(physical_device.physical_device, &result);
+    return result;
+}
+
+
+void cmd_draw(const CommandBuffer &command_buffer, uint32_t vertex_count, uint32_t instance_count, uint32_t first_vertex, uint32_t first_instance)
+{
+    vkCmdDraw(command_buffer, vertex_count, instance_count, first_vertex, first_instance);
+}
+
 PYBIND11_MODULE(pyvku, m) {
     m.doc() = "vku test"; // optional module docstring
 
@@ -939,7 +1219,15 @@ PYBIND11_MODULE(pyvku, m) {
         .def("cmd_set_scissor", cmd_set_scissor)
         .def("cmd_begin_render_pass", cmd_begin_render_pass)
         .def("cmd_end_render_pass", cmd_end_render_pass)
-        .def("end_command_buffer", end_command_buffer);
+        .def("end_command_buffer", end_command_buffer)
+        .def("create_shader_module", create_shader_module)
+        .def("cmd_bind_pipeline", cmd_bind_pipeline)
+        .def("cmd_begin_render_pass", cmd_begin_render_pass)
+        .def("get_supported_extensions", get_supported_extensions)
+        .def("get_vulkan_version", get_vulkan_version)
+        .def("get_physical_device_properties", get_physical_device_properties)
+        .def("cmd_bind_vertex_buffers", cmd_bind_vertex_buffers)
+        .def("cmd_draw", cmd_draw);
 
     py::class_<InstanceBuilder>(m, "InstanceBuilder")
         .def(py::init<>())
@@ -962,7 +1250,10 @@ PYBIND11_MODULE(pyvku, m) {
     py::class_<PhysicalDeviceSelector>(m, "PhysicalDeviceSelector")
         .def(py::init<Instance>())
         .def("set_surface", &PhysicalDeviceSelector::set_surface)
-        .def("select", &PhysicalDeviceSelector::select);
+        .def("prefer_gpu_device_type", &PhysicalDeviceSelector::prefer_gpu_device_type)
+        .def("allow_any_gpu_device_type", &PhysicalDeviceSelector::allow_any_gpu_device_type)
+        .def("select", &PhysicalDeviceSelector::select)
+        .def("select_devices", &PhysicalDeviceSelector::select_devices);
 
     py::class_<PhysicalDevice>(m, "PhysicalDevice");
 
@@ -997,6 +1288,8 @@ PYBIND11_MODULE(pyvku, m) {
     py::class_<Queue>(m, "Queue");
     py::class_<Image>(m, "Image");
     py::class_<ImageView>(m, "ImageView");
+    py::class_< ShaderModule>(m, "ShaderModule")
+        .def("destroy", &ShaderModule::destroy);;
 
     py::class_<FramebufferCreateInfo>(m, "FramebufferCreateInfo")
         .def(py::init<>())
@@ -1023,7 +1316,8 @@ PYBIND11_MODULE(pyvku, m) {
         .def_readwrite("layout", &AttachmentReference::layout);
 
     py::enum_<VkFormat>(m, "Format")
-        .value("UNDEFINED", VK_FORMAT_UNDEFINED);
+        .value("UNDEFINED", VK_FORMAT_UNDEFINED)
+        .value("R32G32B32_SFLOAT", VK_FORMAT_R32G32B32_SFLOAT);
 
     py::enum_<VkImageLayout>(m, "ImageLayout")
         .value("UNDEFINED", VK_IMAGE_LAYOUT_UNDEFINED)
@@ -1091,6 +1385,12 @@ PYBIND11_MODULE(pyvku, m) {
 
     py::class_<Framebuffer>(m, "Framebuffer");
     py::class_<Fence>(m, "Fence");
+    py::class_<DescriptorSetLayout>(m, "DescriptorSetLayout");
+    py::class_< Pipeline>(m, "Pipeline")
+        .def("destroy", &Pipeline::destroy);
+
+    py::class_<PipelineLayout>(m, "PipelineLayout")
+        .def("destroy", &PipelineLayout::destroy);
 
     py::class_<FenceCreateInfo>(m, "FenceCreateInfo")
         .def(py::init<>())
@@ -1141,16 +1441,6 @@ PYBIND11_MODULE(pyvku, m) {
         .def_readwrite("swapchains", &PresentInfo::swapchains)
         .def_readwrite("wait_semaphores", &PresentInfo::wait_semaphores);
 
-
-
-    /*
-    py::class_<VkClearColorValue>(m, "ColorClearValue")
-        .def(py::init<>())
-        .def_readwrite("float32", &VkClearColorValue::float32)
-        .def_readwrite("int32", &VkClearColorValue::int32)
-        .def_readwrite("uint32", &VkClearColorValue::uint32);
-        */
-
     py::class_<ClearValue>(m, "ClearValue")
         .def(py::init<>())
         .def_static("colorf", &ClearValue::colorf);
@@ -1183,5 +1473,107 @@ PYBIND11_MODULE(pyvku, m) {
     py::enum_<VkSubpassContents>(m, "SubpassContents")
         .value("INLINE", VK_SUBPASS_CONTENTS_INLINE)
         .value("SECONDARY_COMMAND_BUFFERS", VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS);
+
+    py::class_<VkVertexInputBindingDescription>(m, "VertexInputBindingDescription")
+        .def(py::init<>())
+        .def(py::init<uint32_t, uint32_t, VkVertexInputRate>())
+        .def_readwrite("binding", &VkVertexInputBindingDescription::binding)
+        .def_readwrite("input_rate", &VkVertexInputBindingDescription::inputRate)
+        .def_readwrite("stride", &VkVertexInputBindingDescription::stride);
+
+    py::class_<VkVertexInputAttributeDescription>(m, "VertexInputAttributeDescription")
+        .def(py::init<>())
+        .def(py::init<uint32_t, uint32_t, VkFormat, uint32_t>())
+        .def_readwrite("binding", &VkVertexInputAttributeDescription::binding)
+        .def_readwrite("format", &VkVertexInputAttributeDescription::format)
+        .def_readwrite("location", &VkVertexInputAttributeDescription::location)
+        .def_readwrite("offset", &VkVertexInputAttributeDescription::offset);
+
+    py::enum_< VkVertexInputRate>(m, "VertexInputRate")
+        .value("VERTEX", VK_VERTEX_INPUT_RATE_VERTEX)
+        .value("INSTANCE", VK_VERTEX_INPUT_RATE_INSTANCE);
+
+    py::class_<PipelineLayoutBuilder>(m, "PipelineLayoutBuilder")
+        .def(py::init<Device>())
+        .def("add_descriptor_set", &PipelineLayoutBuilder::add_descriptor_set)
+        .def("build", &PipelineLayoutBuilder::build);
+
+    py::class_< GraphicsPipelineBuilder>(m, "GraphicsPipelineBuilder")
+        .def(py::init<Device>())
+        .def("add_color_blend_attachment", &GraphicsPipelineBuilder::add_color_blend_attachment)
+        .def("add_dynamic_state", &GraphicsPipelineBuilder::add_dynamic_state)
+        .def("add_scissor", &GraphicsPipelineBuilder::add_scissor)
+        .def("add_shader_stage", &GraphicsPipelineBuilder::add_shader_stage)
+        .def("add_vertex_attributes", &GraphicsPipelineBuilder::add_vertex_attributes)
+        .def("add_vertex_binding", &GraphicsPipelineBuilder::add_vertex_binding)
+        .def("add_viewport", &GraphicsPipelineBuilder::add_viewport)
+        .def("set_pipeline_layout", &GraphicsPipelineBuilder::set_pipeline_layout)
+        .def("set_render_pass", &GraphicsPipelineBuilder::set_render_pass)
+        .def("build", &GraphicsPipelineBuilder::build);
+
+    py::class_< BufferFactory>(m, "BufferFactory")
+        .def(py::init<Device, PhysicalDevice>())
+        .def("build", &BufferFactory::build);
+
+    py::class_<Buffer>(m, "Buffer")
+        .def("destroy", &Buffer::destroy)
+        .def("map_memory", &Buffer::map_memory, py::arg("size") = VK_WHOLE_SIZE, py::arg("offset") = 0)
+        .def("unmap_memory", &Buffer::unmap_memory)
+        .def("get_mapped", &Buffer::get_mapped);
+
+    py::enum_<VkBufferUsageFlagBits>(m, "BufferUsage", py::arithmetic())
+        .value("VERTEX_BUFFER_BIT", VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+
+    py::enum_<VkMemoryPropertyFlagBits>(m, "MemoryProperty", py::arithmetic())
+        .value("HOST_COHERENT_BIT", VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+        .value("HOST_VISIBLE_BIT", VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+
+    py::class_< VkPipelineColorBlendAttachmentState>(m, "PipelineColorBlendAttachmentState")
+        .def(py::init<>())
+        .def_readwrite("blend_enable", &VkPipelineColorBlendAttachmentState::blendEnable)
+        .def_readwrite("color_write_mask", &VkPipelineColorBlendAttachmentState::colorWriteMask);
+
+
+    py::enum_<VkColorComponentFlagBits>(m, "ColorComponent", py::arithmetic())
+        .value("R_BIT", VK_COLOR_COMPONENT_R_BIT)
+        .value("G_BIT", VK_COLOR_COMPONENT_G_BIT)
+        .value("B_BIT", VK_COLOR_COMPONENT_B_BIT)
+        .value("A_BIT", VK_COLOR_COMPONENT_A_BIT);
+
+    py::enum_<VkShaderStageFlagBits>(m, "ShaderStage", py::arithmetic())
+        .value("ALL", VK_SHADER_STAGE_ALL)
+        .value("FRAGMENT_BIT", VK_SHADER_STAGE_FRAGMENT_BIT)
+        .value("VERTEX_BIT", VK_SHADER_STAGE_VERTEX_BIT);
+
+    py::enum_<VkDynamicState>(m, "DynamicState")
+        .value("VIEWPORT", VK_DYNAMIC_STATE_VIEWPORT)
+        .value("SCISSOR", VK_DYNAMIC_STATE_SCISSOR);
+
+
+    py::class_< VkPhysicalDeviceProperties>(m, "PhysicalDeviceProperties")
+        .def_property_readonly("api_version", [](const VkPhysicalDeviceProperties& d) { 
+            return std::tuple<uint32_t, uint32_t, uint32_t>(
+                VK_VERSION_MAJOR(d.apiVersion),
+                VK_VERSION_MINOR(d.apiVersion),
+                VK_VERSION_PATCH(d.apiVersion));
+        })
+        .def_readonly("device_id", &VkPhysicalDeviceProperties::deviceID)
+        .def_property_readonly("device_name", [](const VkPhysicalDeviceProperties& d) { return std::string(d.deviceName);  })
+        .def_readonly("device_type", &VkPhysicalDeviceProperties::deviceType)
+        .def_readonly("driver_version", &VkPhysicalDeviceProperties::driverVersion)
+        // .def_readwrite("", &VkPhysicalDeviceProperties::limits)
+        .def_readonly("pipeline_cache_uuid", &VkPhysicalDeviceProperties::pipelineCacheUUID)
+        // .def_readwrite("", &VkPhysicalDeviceProperties::sparseProperties)
+        .def_readonly("vendor_id", &VkPhysicalDeviceProperties::vendorID);
+
+        py::enum_< vkb::PreferredDeviceType>(m, "PreferredDeviceType")
+            .value("integrated", vkb::PreferredDeviceType::integrated)
+            .value("discrete", vkb::PreferredDeviceType::discrete);
+
+        py::enum_< VkPhysicalDeviceType>(m, "PhysicalDeviceType")
+            .value("CPU", VK_PHYSICAL_DEVICE_TYPE_CPU)
+            .value("DISCRETE_GPU", VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
+            .value("INTEGRATED_GPU", VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU)
+            .value("TYPE_OTHER", VK_PHYSICAL_DEVICE_TYPE_OTHER);
 }
 
