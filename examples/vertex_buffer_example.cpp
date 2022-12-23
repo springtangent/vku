@@ -111,24 +111,6 @@ public:
 			return false;
 		}
 
-		/*
-		// create fragment shader
-		std::vector<char> frag_code = read_file(std::string(EXAMPLE_SHADER_DIRECTORY) + "/triangle_buffer.frag.spv");
-		if (frag_code.empty())
-		{
-			std::cout << "failed to load fragment shader\n";
-			return false; // failed to create shader modules
-		}
-
-		auto frag_module_result = vku::create_shader_module(vkb_device, frag_code);
-		if (!frag_module_result)
-		{
-			std::cout << "failed to create shader module\n";
-			return false; // failed to create shader modules
-		}
-		vku::ShaderModule frag_module = frag_module_result.get_value();
-		*/
-
 		vku::GraphicsPipelineBuilder pipeline_builder(vkb_device);
 
 		VkPipelineColorBlendAttachmentState colorBlendAttachment = {};
@@ -154,6 +136,9 @@ public:
 			return false;
 		}
 		graphics_pipeline = pipeline_result.get_value();
+
+		vert_module.destroy();
+		frag_module.destroy();
 
 		return true;
 	}
@@ -228,6 +213,8 @@ public:
 	virtual void on_destroy() override
 	{
 		destroy_buffers();
+		pipeline_layout.destroy();
+		graphics_pipeline.destroy();
 	}
 private:
 	vku::Buffer vertex_buffer{};

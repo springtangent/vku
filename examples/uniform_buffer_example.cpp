@@ -31,6 +31,7 @@ SOFTWARE.
 #include <iostream>
 #include <fstream>
 #include <chrono>
+#include <optional>
 
 #include <VkBootstrap.h>
 #define GLFW_INCLUDE_VULKAN
@@ -117,7 +118,6 @@ public:
 
 	inline void destroy()
 	{
-		staging_buffer.destroy();
 		vertex_buffer.destroy();
 		index_buffer.destroy();
 		graphics_pipeline.destroy();
@@ -160,14 +160,16 @@ public:
 			return false;
 		}
 
-		if (buffer_fence != VK_NULL_HANDLE)
+		auto err = executor.wait();
+
+		if (err)
 		{
-			auto vk_result = vkWaitForFences(device, 1, &buffer_fence, true, UINT64_MAX);
-			// TODO: handle error
-			vkDestroyFence(device, buffer_fence, nullptr);
-			vkFreeCommandBuffers(device, command_pool, 1, &copy_buffer_command_buffer);
-			staging_buffer.destroy(); // we need to make sure the staging buffer remains live as well.
+			std::cerr << "executor.wait failed" << std::endl;
+			return false;
 		}
+
+		executor.destroy();
+		staging_buffer.destroy();
 
 		return true;
 	}
@@ -181,8 +183,7 @@ public:
 
 	// temporary stuff used when populating the vertex and index buffers.
 	vku::Buffer staging_buffer{};
-	VkFence buffer_fence{ VK_NULL_HANDLE }; // TODO: this and copy_buffer_command_buffer aren't destroyed in some error cases.
-	VkCommandBuffer copy_buffer_command_buffer{ VK_NULL_HANDLE };
+	vku::SingleTimeCommandExecutor executor{};
 
 	inline bool create_buffers()
 	{
@@ -236,36 +237,40 @@ public:
 		staging_buffer.unmap_memory();
 
 		// copy the staging buffer to the vertex buffer.
-		vku::SingleTimeCommandExecutor executor(device, command_pool, graphics_queue);
+		executor.init(device, command_pool, graphics_queue);
 
-		VkFenceCreateInfo fence_create_info{};
-		fence_create_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-		vkCreateFence(device, &fence_create_info, nullptr, &buffer_fence);
+		vku::Result<VkCommandBuffer> enter_result = executor.enter();
 
-		vku::Error error{};
-		auto execute_result = executor.execute([&](VkCommandBuffer commandBuffer) -> bool {
-			VkBufferCopy copyRegion{};
-			copyRegion.dstOffset = 0;
-			copyRegion.srcOffset = 0;
-			copyRegion.size = vertices_size;
-			vkCmdCopyBuffer(commandBuffer, staging_buffer, vertex_buffer, 1, &copyRegion);
+		if (!enter_result)
+		{
+			std::cout << "failed to begin single time commands" << std::endl;
+			return false;
+		}
 
-			copyRegion.dstOffset = 0;
-			copyRegion.srcOffset = vertices_size;
-			copyRegion.size = indices_size;
-			vkCmdCopyBuffer(commandBuffer, staging_buffer, index_buffer, 1, &copyRegion);
+		auto command_buffer = enter_result.get_value();
 
-			return true;
-		}, buffer_fence);
+		VkBufferCopy copyRegion{};
+		copyRegion.dstOffset = 0;
+		copyRegion.srcOffset = 0;
+		copyRegion.size = vertices_size;
+		vkCmdCopyBuffer(command_buffer, staging_buffer, vertex_buffer, 1, &copyRegion);
 
-		if (!execute_result)
+		copyRegion.dstOffset = 0;
+		copyRegion.srcOffset = vertices_size;
+		copyRegion.size = indices_size;
+		vkCmdCopyBuffer(command_buffer, staging_buffer, index_buffer, 1, &copyRegion);
+
+		auto exit_result = executor.exit();
+
+		if (!exit_result)
 		{
 			// TODO: report contents of error.
+			std::cout << "transfer buffer exit failed." << std::endl;
 			return false;
 		}
 
 		// because we DID pass in a fence, execute_result contains a command buffer, and we need to delete it after the fence is signaled.
-		copy_buffer_command_buffer = execute_result.get_value();
+		exit_result.get_value();
 
 		return true;
 	}
@@ -354,6 +359,9 @@ public:
 			return false;
 		}
 		graphics_pipeline = pipeline_result.get_value();
+
+		vert_module.destroy();
+		frag_module.destroy();
 
 		return true;
 	}

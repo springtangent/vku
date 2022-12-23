@@ -30,6 +30,7 @@ SOFTWARE.
 #include <system_error>
 #include <limits>
 #include <array>
+#include <optional>
 
 namespace vku
 {
@@ -256,7 +257,10 @@ namespace vku
 			callback_failed,
 			end_command_buffer_failed,
 			queue_submit_failed,
-			wait_idle_failed
+			wait_idle_failed,
+			already_in_progress,
+			create_fence_failed,
+			wait_failed
 		};
 
 		struct CommandBufferExecutorErrorCategory : std::error_category
@@ -286,6 +290,12 @@ namespace vku
 					return "wait_idle_failed";
 				case CommandBufferExecutorError::end_command_buffer_failed:
 					return "end_command_buffer_failed";
+				case CommandBufferExecutorError::already_in_progress:
+					return "already_in_progress";
+				case CommandBufferExecutorError::create_fence_failed:
+					return "create_fence_failed";
+				case CommandBufferExecutorError::wait_failed:
+					return "wait_failed";
 				default:
 					return "unknown";
 				}
@@ -890,8 +900,19 @@ namespace vku
 	class SingleTimeCommandExecutor
 	{
 	public:
+		SingleTimeCommandExecutor() : device(VK_NULL_HANDLE), command_pool(VK_NULL_HANDLE), queue(VK_NULL_HANDLE)
+		{
+		}
+
 		SingleTimeCommandExecutor(VkDevice _device, VkCommandPool _command_pool, VkQueue _queue) : device(_device), command_pool(_command_pool), queue(_queue)
 		{
+		}
+
+		void init(VkDevice _device, VkCommandPool _command_pool, VkQueue _queue)
+		{
+			device = _device;
+			command_pool = _command_pool;
+			queue = _queue;
 		}
 
 		inline bool is_valid() const
@@ -899,64 +920,94 @@ namespace vku
 			return device != VK_NULL_HANDLE && command_pool != VK_NULL_HANDLE && queue != VK_NULL_HANDLE;
 		}
 
-		inline void deallocate(VkCommandBuffer command_buffer) const
+		inline bool in_progress() const
 		{
-			vkFreeCommandBuffers(device, command_pool, 1, &command_buffer);
+			return command_buffer != VK_NULL_HANDLE;
 		}
 
-		template<typename F>
-		Result<VkCommandBuffer> execute(F f, VkFence fence = VK_NULL_HANDLE) const
+		inline void destroy()
+		{
+			if (command_buffer != VK_NULL_HANDLE)
+			{
+				vkFreeCommandBuffers(device, command_pool, 1, &command_buffer);
+			}
+
+			if (fence != VK_NULL_HANDLE)
+			{
+				vkDestroyFence(device, fence, nullptr);
+			}
+		}
+
+		Result<VkCommandBuffer> enter()
 		{
 			Error error{};
-			VkCommandBuffer command_buffer{ VK_NULL_HANDLE };
+
+			if (in_progress())
+			{
+				error = Error{ detail::make_error_code(detail::CommandBufferExecutorError::already_in_progress) };
+				return Result<VkCommandBuffer>(error);
+			}
 
 			if (!begin_single_time_commands(command_buffer, error))
 			{
-				deallocate(command_buffer);
+				destroy();
 				return Result<VkCommandBuffer>(error);
 			}
 
-			// TODO: allow for an error in f to stop this from continuing
-			bool callback_result = f(command_buffer);
+			return { command_buffer };
+		}
 
-			if (!callback_result)
-			{
-				deallocate(command_buffer);
-				error = Error{ detail::make_error_code(detail::CommandBufferExecutorError::callback_failed) };
-				return Result<VkCommandBuffer>(error);
-			}
-
-			bool result = end_single_time_commands(command_buffer, error, fence);
+		Result<VkFence> exit()
+		{
+			Error error{};
+			bool result = end_single_time_commands(command_buffer, error);
 
 			if (!result)
 			{
 				// we have a valid command buffer, but there was an error ending the single time commands.
-				deallocate(command_buffer);
-
-				return Result<VkCommandBuffer>(error);
+				destroy();
+				return Result<VkFence>(error);
 			}
 
-			// if the user doesn't pass in a fence, wait for the queue to go idle and delete the command buffer
-			// otherwise we assume the user will wait for the fence and destroy the command buffer on their own.
-			if (fence == VK_NULL_HANDLE)
-			{
-				// TODO: figure out if we should be calling this or leaving it to the caller to decide.
-				auto vk_result = vkQueueWaitIdle(queue);
-
-				deallocate(command_buffer);
-
-				if (vk_result != VK_SUCCESS)
-				{
-					error = Error{ detail::make_error_code(detail::CommandBufferExecutorError::wait_idle_failed), vk_result };
-					return Result<VkCommandBuffer>(error);
-				}
-
-				command_buffer = VK_NULL_HANDLE;
-			}
-
-			return Result<VkCommandBuffer>(command_buffer);
+			return Result<VkFence>(fence);
 		}
+
+		// waiting destroys the created command buffer and fence.
+		std::optional<Error> wait()
+		{
+			auto vk_result = vkWaitForFences(device, 1, &fence, true, UINT64_MAX);
+
+			Error error{};
+
+			if (vk_result != VK_SUCCESS)
+			{
+				// we have a valid command buffer, but there was an error ending the single time commands.
+				error = Error{ detail::make_error_code(detail::CommandBufferExecutorError::wait_failed) };
+				return { error };
+			}
+
+			return {};
+		}
+
 	private:
+		bool create_fence(Error &error)
+		{
+			VkFenceCreateInfo fence_create_info{};
+			fence_create_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+			fence_create_info.pNext = nullptr;
+			fence_create_info.flags = 0;
+
+			auto vk_result = vkCreateFence(device, &fence_create_info, nullptr, &fence);
+
+			if (vk_result != VK_SUCCESS)
+			{
+				error = { detail::make_error_code(detail::CommandBufferExecutorError::create_fence_failed), vk_result };
+				return false;
+			}
+
+			return true;
+		}
+
 		bool begin_single_time_commands(VkCommandBuffer &commandBuffer, Error &error) const
 		{
 			VkCommandBufferAllocateInfo allocInfo{};
@@ -990,12 +1041,18 @@ namespace vku
 		}
 
 		// returns false if error occurred.
-		bool end_single_time_commands(VkCommandBuffer commandBuffer, Error &error, VkFence fence = VK_NULL_HANDLE) const
+		bool end_single_time_commands(VkCommandBuffer commandBuffer, Error &error)
 		{
 			auto vk_result = vkEndCommandBuffer(commandBuffer);
 			if (vk_result != VK_SUCCESS)
 			{
 				error = Error{ detail::make_error_code(detail::CommandBufferExecutorError::end_command_buffer_failed), vk_result };
+				return false;
+			}
+
+			if (!create_fence(error))
+			{
+				error = Error{ detail::make_error_code(detail::CommandBufferExecutorError::create_fence_failed), vk_result };
 				return false;
 			}
 
@@ -1018,6 +1075,8 @@ namespace vku
 		VkDevice device{ VK_NULL_HANDLE };
 		VkQueue queue{ VK_NULL_HANDLE };
 		VkCommandPool command_pool{ VK_NULL_HANDLE };
+		VkCommandBuffer command_buffer{ VK_NULL_HANDLE };
+		VkFence fence{ VK_NULL_HANDLE };
 	};
 
 	enum class DescriptorType

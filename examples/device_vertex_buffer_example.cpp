@@ -72,9 +72,9 @@ struct Vertex
 
 const std::vector<Vertex> vertices = {
 	{{-0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}},
-	{{0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}},
-	{{0.5f, 0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}},
-	{{-0.5f, 0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}}
+	{{ 0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}},
+	{{ 0.5f,  0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}},
+	{{-0.5f,  0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}}
 };
 
 
@@ -144,6 +144,9 @@ public:
 		}
 		graphics_pipeline = pipeline_result.get_value();
 
+		vert_module.destroy();
+		frag_module.destroy();
+
 		return true;
 	}
 
@@ -169,7 +172,7 @@ public:
 		// this will be destroyed when it goes out of scope at the end of the functin.
 		staging_buffer = staging_buffer_result.get_value();
 
-		auto vb_result = factory.build(vertices_size, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		auto vb_result = factory.build(vertices_size, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
 		if (!vb_result)
 		{
@@ -179,7 +182,7 @@ public:
 
 		vertex_buffer = vb_result.get_value();
 
-		auto ib_result = factory.build(indices_size, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		auto ib_result = factory.build(indices_size, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
 		if (!ib_result)
 		{
@@ -203,36 +206,37 @@ public:
 		staging_buffer.unmap_memory();
 
 		// copy the staging buffer to the vertex buffer.
-		vku::SingleTimeCommandExecutor executor(vkb_device, command_pool, graphics_queue);
+		executor.init(vkb_device, command_pool, graphics_queue);
 
-		VkFenceCreateInfo fence_create_info{};
-		fence_create_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-		vkCreateFence(vkb_device, &fence_create_info, nullptr, &buffer_fence);
+		auto enter_result = executor.enter();
 
-		vku::Error error{};
-		auto execute_result = executor.execute([&](VkCommandBuffer commandBuffer) -> bool {
-			VkBufferCopy copyRegion{};
-			copyRegion.dstOffset = 0;
-			copyRegion.srcOffset = 0;
-			copyRegion.size = vertices_size;
-			vkCmdCopyBuffer(commandBuffer, staging_buffer, vertex_buffer, 1, &copyRegion);
-
-			copyRegion.dstOffset = 0;
-			copyRegion.srcOffset = vertices_size;
-			copyRegion.size = indices_size;
-			vkCmdCopyBuffer(commandBuffer, staging_buffer, index_buffer, 1, &copyRegion);
-
-			return true;
-		}, buffer_fence);
-
-		if (!execute_result)
+		if (!enter_result)
 		{
-			// TODO: report contents of error.
+			std::cout << "enter transfer buffers failed." << std::endl;
 			return false;
 		}
 
-		// because we DID pass in a fence, execute_result contains a command buffer, and we need to delete it after the fence is signaled.
-		copy_buffer_command_buffer = execute_result.get_value();
+		auto command_buffer = enter_result.get_value();
+
+		VkBufferCopy copyRegion{};
+		copyRegion.dstOffset = 0;
+		copyRegion.srcOffset = 0;
+		copyRegion.size = vertices_size;
+		vkCmdCopyBuffer(command_buffer, staging_buffer, vertex_buffer, 1, &copyRegion);
+
+		copyRegion.dstOffset = 0;
+		copyRegion.srcOffset = vertices_size;
+		copyRegion.size = indices_size;
+		vkCmdCopyBuffer(command_buffer, staging_buffer, index_buffer, 1, &copyRegion);
+
+		auto exit_result = executor.exit();
+
+		if (!exit_result)
+		{
+			// TODO: report contents of error.
+			std::cout << "exit transfer buffers failed." << std::endl;
+			return false;
+		}
 
 		return true;
 	}
@@ -243,7 +247,7 @@ public:
 		index_buffer.destroy();
 	}
 
-	virtual bool populate_command_buffer_render_pass(uint32_t i)
+	virtual bool record_command_buffer_render_pass(uint32_t i) override
 	{
 		VkCommandBuffer command_buffer = command_buffers[i];
 
@@ -279,14 +283,16 @@ public:
 		}
 
 		// you could do other transfer operations here, then wait for the fence.
-
-		if (buffer_fence != VK_NULL_HANDLE)
+		std::cout << "waiting for load" << std::endl;
+		auto err = executor.wait();
+		if (err)
 		{
-			vkWaitForFences(vkb_device, 1, &buffer_fence, true, UINT64_MAX);
-			vkDestroyFence(vkb_device, buffer_fence, nullptr);
-			vkFreeCommandBuffers(vkb_device, command_pool, 1, &copy_buffer_command_buffer);
-			staging_buffer.destroy(); // we need to make sure the staging buffer remains live as well.
+			std::cout << "executor::wait failed" << std::endl;
+			return false;
 		}
+		executor.destroy();
+		staging_buffer.destroy();
+
 
 		return true;
 	}
@@ -294,6 +300,8 @@ public:
 	virtual void on_destroy() override
 	{
 		destroy_buffers();
+		pipeline_layout.destroy();
+		graphics_pipeline.destroy();
 	}
 
 private:
@@ -303,8 +311,8 @@ private:
 	vku::Buffer vertex_buffer{};
 	vku::Buffer index_buffer{};
 	vku::Buffer staging_buffer{};
-	VkFence buffer_fence{ VK_NULL_HANDLE };
-	VkCommandBuffer copy_buffer_command_buffer{ VK_NULL_HANDLE };
+
+	vku::SingleTimeCommandExecutor executor{};
 };
 
 int main()

@@ -1180,6 +1180,67 @@ void cmd_draw(const CommandBuffer &command_buffer, uint32_t vertex_count, uint32
     vkCmdDraw(command_buffer, vertex_count, instance_count, first_vertex, first_instance);
 }
 
+
+class SingleTimeCommandExecutor
+{
+public:
+    SingleTimeCommandExecutor(const Device& device, const CommandPool& command_pool, const Queue &queue) : executor(device.device, command_pool.handle, queue.handle) { }
+
+    CommandBuffer enter()
+    {
+        auto result = executor.enter();
+
+        // TODO: error handling
+
+        return CommandBuffer{ result.get_value() };
+    }
+
+    Fence exit()
+    {
+        auto result = executor.exit();
+        
+        // TODO: error handling
+
+        return Fence{ result.get_value() };
+    }
+
+    void wait()
+    {
+        auto result = executor.wait();
+
+        if (result.has_value())
+        {
+            // handle error.
+        }
+    }
+
+    void destroy()
+    {
+        executor.destroy();
+    }
+
+    vku::SingleTimeCommandExecutor executor{};
+};
+
+
+void cmd_copy_buffer(const CommandBuffer &command_buffer, const Buffer &src_buffer, const Buffer &dst_buffer, const std::vector<VkBufferCopy> &regions)
+{
+    vkCmdCopyBuffer(command_buffer, src_buffer, dst_buffer, regions.size(), regions.data());
+}
+
+
+void cmd_bind_index_buffer(const CommandBuffer& command_buffer, const Buffer &buffer, VkDeviceSize offset, VkIndexType index_type)
+{
+    vkCmdBindIndexBuffer(command_buffer, buffer, offset, index_type);
+}
+
+
+void cmd_draw_indexed(const CommandBuffer& command_buffer, uint32_t index_count, uint32_t instance_count, uint32_t first_index, int32_t vertex_offset, uint32_t first_instance)
+{
+    vkCmdDrawIndexed(command_buffer, index_count, instance_count, first_index, vertex_offset, first_instance);
+}
+
+
 PYBIND11_MODULE(pyvku, m) {
     m.doc() = "vku test"; // optional module docstring
 
@@ -1227,7 +1288,10 @@ PYBIND11_MODULE(pyvku, m) {
         .def("get_vulkan_version", get_vulkan_version)
         .def("get_physical_device_properties", get_physical_device_properties)
         .def("cmd_bind_vertex_buffers", cmd_bind_vertex_buffers)
-        .def("cmd_draw", cmd_draw);
+        .def("cmd_draw", cmd_draw)
+        .def("cmd_copy_buffer", cmd_copy_buffer)
+        .def("cmd_bind_index_buffer", cmd_bind_index_buffer)
+        .def("cmd_draw_indexed", cmd_draw_indexed);
 
     py::class_<InstanceBuilder>(m, "InstanceBuilder")
         .def(py::init<>())
@@ -1522,11 +1586,15 @@ PYBIND11_MODULE(pyvku, m) {
         .def("get_mapped", &Buffer::get_mapped);
 
     py::enum_<VkBufferUsageFlagBits>(m, "BufferUsage", py::arithmetic())
-        .value("VERTEX_BUFFER_BIT", VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        .value("VERTEX_BUFFER_BIT", VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)
+        .value("INDEX_BUFFER_BIT", VK_BUFFER_USAGE_INDEX_BUFFER_BIT)
+        .value("TRANSFER_DST_BIT", VK_BUFFER_USAGE_TRANSFER_DST_BIT)
+        .value("TRANSFER_SRC_BIT", VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
 
     py::enum_<VkMemoryPropertyFlagBits>(m, "MemoryProperty", py::arithmetic())
         .value("HOST_COHERENT_BIT", VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
-        .value("HOST_VISIBLE_BIT", VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+        .value("HOST_VISIBLE_BIT", VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+        .value("DEVICE_LOCAL_BIT", VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
     py::class_< VkPipelineColorBlendAttachmentState>(m, "PipelineColorBlendAttachmentState")
         .def(py::init<>())
@@ -1575,5 +1643,24 @@ PYBIND11_MODULE(pyvku, m) {
             .value("DISCRETE_GPU", VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
             .value("INTEGRATED_GPU", VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU)
             .value("TYPE_OTHER", VK_PHYSICAL_DEVICE_TYPE_OTHER);
+
+        py::class_< SingleTimeCommandExecutor>(m, "SingleTimeCommandExecutor")
+            .def(py::init<Device, CommandPool, Queue>())
+            .def("enter", &SingleTimeCommandExecutor::enter)
+            .def("exit", &SingleTimeCommandExecutor::exit)
+            .def("wait", &SingleTimeCommandExecutor::wait)
+            .def("destroy", &SingleTimeCommandExecutor::enter)
+            .def("__enter__", [&](SingleTimeCommandExecutor& e) -> CommandBuffer { return e.enter();  })
+            .def("__exit__", [&](SingleTimeCommandExecutor& e, py::object exc_type, py::object exc_value, py::object traceback) { e.exit();  });
+
+        py::class_<VkBufferCopy>(m, "BufferCopy")
+            .def(py::init<>())
+            .def_readwrite("size", &VkBufferCopy::size)
+            .def_readwrite("dst_offset", &VkBufferCopy::dstOffset)
+            .def_readwrite("src_offset", &VkBufferCopy::srcOffset);
+
+        py::enum_< VkIndexType>(m, "IndexType")
+            .value("UINT16", VK_INDEX_TYPE_UINT16)
+            .value("UINT32", VK_INDEX_TYPE_UINT32);
 }
 

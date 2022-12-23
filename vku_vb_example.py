@@ -4,84 +4,6 @@ import pyvku as vku
 import struct
 
 MAX_FRAMES_IN_FLIGHT = 2
-
-"""
-import glm
-import types
-
-
-
-
-VERTEX_ATTR_SIZES = {
-    vku.Format.R32G32B32_SFLOAT: 96
-}
-
-
-def create_vertex_array_class(*attributes):
-    def constructor(self, arr, index):
-        self.arr = arr
-        self.index = index
-
-    vertex_type = type("Vertex", (object, ), {
-        "__init__": constructor
-    })
-
-
-VertexArray = create_vertex_array_class(("position", vku.Format.R32G32B32_SFLOAT), ("color", vku.Format.R32G32B32_SFLOAT))
-
-vertex_array = VertexArray(100)
-
-
-class Vec3Attr:
-    def __set_name__(self, obj, name):
-        print("__set_name__", self, obj, name)
-
-    def __get__(self, obj, objtype=None):
-        return None
-
-    def __set__(self, obj, value):
-        pass
-
-
-class VertexFormat:
-    position = Vec3Attr()
-    color = Vec3Attr()
-
-
-
-
-
-class Vec2Attr:
-    def __get__(self, obj, objtype=None):
-        pass
-
-    def __set__(self, obj, value):
-        pass
-
-
-class FloatAttr:
-    def __get__(self, obj, objtype=None):
-        pass
-
-    def __set__(self, obj, value):
-        pass
-
-
-class Vertex:
-    POSITION_LOCATION = 0
-    COLOR_LOCATION = 1
-
-    @classmethod
-    def stride(cls):
-        return 12
-
-    @classmethod
-
-
-    @classmethod
-
-"""
-
 VERTICES = [
     (( 0.0, -0.5, 0.0), (1.0, 0.0, 0.0)),
     (( 0.5,  0.5, 0.0), (0.0, 1.0, 0.0)),
@@ -384,6 +306,8 @@ class VulkanContext:
         vku.reset_fences(self.device, [self.in_flight_fences[self.current_frame]])
         vku.reset_command_buffer(self.command_buffers[self.current_frame], 0)
 
+        return self.current_frame
+
     def draw_frame(self):
         try:
             self.begin_draw_frame()
@@ -518,13 +442,14 @@ class GraphicsContext:
 
     def destroy(self):
         self.vulkan_context.device.wait_idle()
+
         for fc in self.frame_contexts:
             fc.destroy()
         self.shared_context.destroy()
         self.vulkan_context.destroy()
         vku.terminate()
 
-    def record_command_buffer(self, command_buffer):
+    def record_command_buffer(self, command_buffer, scene):
         vku.cmd_bind_pipeline(command_buffer, vku.PipelineBindPoint.GRAPHICS, self.shared_context.graphics_pipeline)
 
         vertex_buffers = [ self.shared_context.vertex_buffer ]
@@ -535,16 +460,17 @@ class GraphicsContext:
 
     def draw_frame(self, scene):
         try:
-            image_index = self.vulkan_context.begin_draw_frame()
+            current_frame = self.vulkan_context.begin_draw_frame()
         except vku.SwapchainOutOfDateError as sc_error:
             self.vulkan_context.recreate_swapchain()
             return
 
         command_buffer = self.vulkan_context.begin_record_command_buffer()
+        frame_context = self.frame_contexts[current_frame]
 
         self.vulkan_context.begin_render_pass()
 
-        self.record_command_buffer(command_buffer)
+        self.record_command_buffer(command_buffer, scene)
 
         self.vulkan_context.end_render_pass()
 
