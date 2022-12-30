@@ -11,3 +11,9 @@
 	path = extern/pybind11
 	url = ../../pybind/pybind11
 	branch = stable
+[submodule "extern/stb"]
+	path = extern/stb
+	url = ../../nothings/stb.git
+[submodule "extern/fmt"]
+	path = extern/fmt
+	url = ../../fmtlib/fmt.git

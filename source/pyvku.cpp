@@ -10,7 +10,52 @@
 #include <stdexcept>
 #include <tuple>
 
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb_image.h>
+
 namespace py = pybind11;
+
+
+class ImageData
+{
+public:
+    int width{0};
+    int height{ 0 };
+    int channels{ 0 };
+    stbi_uc* pixels{ nullptr };
+
+    ~ImageData()
+    {
+        if (pixels)
+        {
+            stbi_image_free(pixels);
+        }
+
+        pixels = nullptr;
+        width = height = channels = 0;
+    }
+
+    bool is_valid()
+    {
+        return pixels != nullptr;
+    }
+
+    py::memoryview get_data()
+    {
+        return py::memoryview::from_memory(pixels, width * height * channels);
+    }
+
+};
+
+
+ImageData load_image(const char *filename, int desired_channels = STBI_rgb_alpha)
+{
+    ImageData result{};
+    result.pixels = stbi_load(filename, &result.width, &result.height, &result.channels, desired_channels);
+    return result;
+}
+
+
 
 
 class SwapchainOutOfDateError : public std::exception {
@@ -39,8 +84,27 @@ class VkHandle
 {
 public:
     T handle{ VK_NULL_HANDLE };
-    operator T() const { return handle;  }
-    VkHandle& operator=(const T& value) { handle = value; return *this; }
+
+    operator T() const
+    {
+        return handle;
+    }
+
+    VkHandle& operator=(const T& value)
+    {
+        handle = value;
+        return *this;
+    }
+
+    void clear()
+    {
+        handle = VK_NULL_HANDLE;
+    }
+
+    bool is_valid() const
+    {
+        return handle != VK_NULL_HANDLE;
+    }
 };
 
 
@@ -48,13 +112,12 @@ class Queue : public VkHandle<VkQueue> { };
 class Surface : public VkHandle<VkSurfaceKHR> { };
 class Image : public VkHandle<VkImage> { };
 class ImageView : public VkHandle<VkImageView> { };
+class Sampler : public VkHandle<VkImageView> { };
 class RenderPass : public VkHandle<VkRenderPass> { };
 class Framebuffer : public VkHandle<VkFramebuffer> { };
 class CommandPool : public VkHandle<VkCommandPool> { };
-class CommandBuffer : public VkHandle<VkCommandBuffer> { };
 class Semaphore : public VkHandle<VkSemaphore> { };
 class Fence : public VkHandle<VkFence> { };
-class DescriptorSetLayout : public VkHandle<VkDescriptorSetLayout> { };
 
 
 template<typename T>
@@ -80,24 +143,7 @@ public:
 };
 
 
-class ShaderModule : public VKUWrapper<vku::ShaderModule>
-{
-public:
-};
-
-
-class PipelineLayout : public VKUWrapper<vku::PipelineLayout>
-{
-public:
-};
-
-
-class Pipeline : public VKUWrapper<vku::Pipeline>
-{
-public:
-};
-
-
+/*
 class Buffer : public VKUWrapper<vku::Buffer>
 {
 public:
@@ -119,7 +165,7 @@ public:
         return py::memoryview::from_memory(value.get_mapped(), value.get_size());
     }
 };
-
+*/
 
 template<typename H, typename W>
 std::vector<H> get_handles(const std::vector<W>& wrappers)
@@ -154,7 +200,7 @@ std::vector<W> get_wrappers(const std::vector<H> &handles)
 
     for (uint32_t i = 0; i < results.size(); ++i)
     {
-        results[i].handle = handles[i];
+        results[i].handle = (H)handles[i];
     }
     
     return std::move(results);
@@ -361,6 +407,8 @@ public:
 
     vkb::Device device;
 
+    operator VkDevice() const { return (VkDevice)device; }
+
     void wait_idle()
     {
         auto vk_result = vkDeviceWaitIdle(device);
@@ -385,6 +433,21 @@ public:
     }
 };
 
+/*
+template<typename W, typename H>
+std::vector<W> get_vku_wrappers(const Device& device, ...ArgTypes, const std::vector<H>& handles)
+{
+    std::vector<W> results;
+    results.reserve(handles.size());
+
+    for (uint32_t i = 0; i < handles.size(); ++i)
+    {
+        results.push_back(W((VkDevice)device, handles[i]));
+    }
+
+    return std::move(results);
+}
+*/
 
 class DeviceBuilder
 {
@@ -498,9 +561,14 @@ public:
 
     vkb::SwapchainBuilder swapchain_builder;
 
-    SwapchainBuilder& set_old_swapchain(Swapchain& s)
+    SwapchainBuilder& set_old_swapchain(std::optional<Swapchain> s)
     {
-        swapchain_builder.set_old_swapchain(s);
+        VkSwapchainKHR old_swapchain{ VK_NULL_HANDLE };
+        if (s.has_value())
+        {
+            old_swapchain = s.value();
+        }
+        swapchain_builder.set_old_swapchain(old_swapchain);
         return *this;
     }
 
@@ -721,7 +789,7 @@ public:
 };
 
 
-std::vector<CommandBuffer> allocate_command_buffers(const Device& device, const CommandBufferAllocateInfo&i)
+std::vector<vku::CommandBuffer> allocate_command_buffers(const Device& device, const CommandBufferAllocateInfo&i)
 {
     VkCommandBufferAllocateInfo alloc_info{};
     alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -733,7 +801,17 @@ std::vector<CommandBuffer> allocate_command_buffers(const Device& device, const 
 
     // TODO: error handling;
 
-    return std::move(get_wrappers<CommandBuffer>(command_buffers));
+    std::vector<vku::CommandBuffer> results;
+    results.reserve(command_buffers.size());
+
+    for (const auto& cb : command_buffers)
+    {
+        results.emplace_back(device, cb, i.command_pool);
+    }
+
+    return std::move(results);
+
+    // return std::move(get_vku_wrappers<vku::CommandBuffer>(device, command_pool, command_buffers));
 }
 
 Semaphore create_semaphore(const Device& device)
@@ -810,7 +888,7 @@ void reset_fences(const Device &device, const std::vector<Fence> &fences)
     // TODO: error handling
 }
 
-void reset_command_buffer(const CommandBuffer& command_buffer, VkCommandBufferResetFlags flags)
+void reset_command_buffer(const vku::CommandBuffer& command_buffer, VkCommandBufferResetFlags flags)
 {
     vkResetCommandBuffer(command_buffer, flags);
 }
@@ -821,7 +899,7 @@ class SubmitInfo
 public:
     std::vector<Semaphore> wait_semaphores{};
     std::vector<VkPipelineStageFlagBits> wait_dst_stage_masks{};
-    std::vector<CommandBuffer> command_buffers{};
+    std::vector<vku::CommandBuffer> command_buffers{};
     std::vector<Semaphore> signal_semaphores{};
 
     uint32_t wait_semaphores_start{ 0 };
@@ -912,7 +990,7 @@ void queue_present(const Queue &queue, const PresentInfo &present_info)
 }
 
 
-void begin_command_buffer(const CommandBuffer& command_buffer)
+void begin_command_buffer(const vku::CommandBuffer& command_buffer)
 {
     VkCommandBufferBeginInfo begin_info{};
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -960,18 +1038,18 @@ public:
 };
 
 
-void cmd_set_viewport(const CommandBuffer &command_buffer, uint32_t first_viewport, uint32_t viewport_count, std::vector<VkViewport> &viewports)
+void cmd_set_viewport(const vku::CommandBuffer &command_buffer, uint32_t first_viewport, uint32_t viewport_count, std::vector<VkViewport> &viewports)
 {
     vkCmdSetViewport(command_buffer, first_viewport, viewport_count, viewports.data());
 }
 
 
-void cmd_set_scissor(const CommandBuffer& command_buffer, uint32_t first_scissor, uint32_t scissor_count, std::vector<VkRect2D>& scissors)
+void cmd_set_scissor(const vku::CommandBuffer& command_buffer, uint32_t first_scissor, uint32_t scissor_count, std::vector<VkRect2D>& scissors)
 {
     vkCmdSetScissor(command_buffer, first_scissor, scissor_count, scissors.data());
 }
 
-void cmd_begin_render_pass(const CommandBuffer& command_buffer, const RenderPassBeginInfo &info, VkSubpassContents contents)
+void cmd_begin_render_pass(const vku::CommandBuffer& command_buffer, const RenderPassBeginInfo &info, VkSubpassContents contents)
 {
     std::vector<VkClearValue> vk_clear_values;
     VkRenderPassBeginInfo begin_info;
@@ -979,28 +1057,28 @@ void cmd_begin_render_pass(const CommandBuffer& command_buffer, const RenderPass
     vkCmdBeginRenderPass(command_buffer, &begin_info, contents);
 }
 
-void cmd_end_render_pass(const CommandBuffer& command_buffer)
+void cmd_end_render_pass(const vku::CommandBuffer& command_buffer)
 {
     vkCmdEndRenderPass(command_buffer);
 }
 
 
-void end_command_buffer(const CommandBuffer& command_buffer)
+void end_command_buffer(const vku::CommandBuffer& command_buffer)
 {
     vkEndCommandBuffer(command_buffer);
 }
 
-void cmd_bind_pipeline(const CommandBuffer& command_buffer, VkPipelineBindPoint bind_point, const Pipeline &pipeline)
+void cmd_bind_pipeline(const vku::CommandBuffer& command_buffer, VkPipelineBindPoint bind_point, const vku::Pipeline &pipeline)
 {
-    vkCmdBindPipeline(command_buffer, bind_point, pipeline.value);
+    vkCmdBindPipeline(command_buffer, bind_point, pipeline);
 }
 
 
-void cmd_bind_vertex_buffers(const CommandBuffer& command_buffer, uint32_t first_binding, uint32_t binding_count, std::vector<Buffer> buffers, std::vector<VkDeviceSize> offsets)
+void cmd_bind_vertex_buffers(const vku::CommandBuffer& command_buffer, uint32_t first_binding, std::vector<vku::Buffer> buffers, std::vector<VkDeviceSize> offsets)
 {
     // TODO: boudns checking for everything.
     std::vector<VkBuffer> bufs = get_handles<VkBuffer>(buffers);
-    vkCmdBindVertexBuffers(command_buffer, first_binding, binding_count, bufs.data(), offsets.data());
+    vkCmdBindVertexBuffers(command_buffer, first_binding, bufs.size(), bufs.data(), offsets.data());
 }
 
 
@@ -1009,13 +1087,13 @@ class PipelineLayoutBuilder
 public:
     PipelineLayoutBuilder(Device& device) : pipeline_layout_builder(device.device) { }
 
-    PipelineLayoutBuilder& add_descriptor_set(const DescriptorSetLayout& layout)
+    PipelineLayoutBuilder& add_descriptor_set(const vku::DescriptorSetLayout& layout)
     {
         pipeline_layout_builder.add_descriptor_set(layout);
         return *this;
     }
 
-    PipelineLayout build() const
+    vku::PipelineLayout build() const
     {
         // PipelineLayout pipeline_layout(pipeline_layout_builder.device, VK_NULL_HANDLE)
 
@@ -1023,24 +1101,21 @@ public:
 
         // TODO: error handling.
 
-        return PipelineLayout{ result.get_value() };
+        return result.get_value();
     }
 
     vku::PipelineLayoutBuilder pipeline_layout_builder;
 };
 
 
-ShaderModule create_shader_module(const Device &device, py::buffer data)
+vku::ShaderModule create_shader_module(const Device &device, py::buffer data)
 {
-    ShaderModule result{};
     py::buffer_info info = data.request();
     auto shader_module_result = vku::create_shader_module(device.device, reinterpret_cast<const uint32_t *>(info.ptr), info.size * info.itemsize);
     
     // TODO: error handling;
 
-    result.value = shader_module_result.get_value();
-
-    return result;
+    return shader_module_result.get_value();
 }
 
 
@@ -1049,9 +1124,9 @@ class GraphicsPipelineBuilder
 public:
     GraphicsPipelineBuilder(const Device& device) : graphics_pipeline_builder(device.device) { }
 
-    GraphicsPipelineBuilder& add_shader_stage(VkShaderStageFlagBits stage, ShaderModule module)
+    GraphicsPipelineBuilder& add_shader_stage(VkShaderStageFlagBits stage, vku::ShaderModule module)
     {
-        graphics_pipeline_builder.add_shader_stage(stage, module.value, "main");
+        graphics_pipeline_builder.add_shader_stage(stage, module, "main");
         return *this;
     }
 
@@ -1073,9 +1148,9 @@ public:
         return *this;
     }
 
-    GraphicsPipelineBuilder& set_pipeline_layout(PipelineLayout &p)
+    GraphicsPipelineBuilder& set_pipeline_layout(vku::PipelineLayout &p)
     {
-        graphics_pipeline_builder.set_pipeline_layout(p.value);
+        graphics_pipeline_builder.set_pipeline_layout(p);
         return *this;
     }
 
@@ -1103,14 +1178,37 @@ public:
         return *this;
     }
 
-    Pipeline build()
+    GraphicsPipelineBuilder& set_viewport_count(uint32_t c)
+    {
+        graphics_pipeline_builder.set_viewport_count(c);
+        return *this;
+    }
+
+    GraphicsPipelineBuilder& set_scissor_count(uint32_t c)
+    {
+        graphics_pipeline_builder.set_scissor_count(c);
+        return *this;
+    }
+
+    GraphicsPipelineBuilder& set_cull_mode(VkCullModeFlagBits mode)
+    {
+        graphics_pipeline_builder.set_cull_mode(mode);
+        return *this;
+    }
+
+    GraphicsPipelineBuilder& set_front_face(VkFrontFace f)
+    {
+        graphics_pipeline_builder.set_front_face(f);
+        return *this;
+    }
+
+    vku::Pipeline build()
     {
         auto res = graphics_pipeline_builder.build();
 
         // TODO: error handling
 
-        Pipeline result{ res.get_value() };
-        return result;
+        return res.get_value();
     }
 
     vku::GraphicsPipelineBuilder graphics_pipeline_builder;
@@ -1122,16 +1220,17 @@ class BufferFactory
 public:
     BufferFactory(const Device& device, const PhysicalDevice& physical_device) : buffer_factory(device.device, physical_device.physical_device) { }
 
-    Buffer build(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags memory_properties)
+    vku::Buffer build(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags memory_properties)
     {
         auto res = buffer_factory.build(size, usage, memory_properties);
 
         // TODO; error handling
+        if (!res)
+        {
+            throw std::runtime_error("failed to build buffer");
+        }
 
-        Buffer result;
-        result.value = res.get_value();
-
-        return result;
+        return res.get_value();;
     }
 
     vku::BufferFactory buffer_factory;
@@ -1175,7 +1274,7 @@ VkPhysicalDeviceProperties get_physical_device_properties(const PhysicalDevice& 
 }
 
 
-void cmd_draw(const CommandBuffer &command_buffer, uint32_t vertex_count, uint32_t instance_count, uint32_t first_vertex, uint32_t first_instance)
+void cmd_draw(const vku::CommandBuffer &command_buffer, uint32_t vertex_count, uint32_t instance_count, uint32_t first_vertex, uint32_t first_instance)
 {
     vkCmdDraw(command_buffer, vertex_count, instance_count, first_vertex, first_instance);
 }
@@ -1186,13 +1285,13 @@ class SingleTimeCommandExecutor
 public:
     SingleTimeCommandExecutor(const Device& device, const CommandPool& command_pool, const Queue &queue) : executor(device.device, command_pool.handle, queue.handle) { }
 
-    CommandBuffer enter()
+    vku::CommandBuffer enter()
     {
         auto result = executor.enter();
 
         // TODO: error handling
 
-        return CommandBuffer{ result.get_value() };
+        return vku::CommandBuffer{ result.get_value() };
     }
 
     Fence exit()
@@ -1223,21 +1322,175 @@ public:
 };
 
 
-void cmd_copy_buffer(const CommandBuffer &command_buffer, const Buffer &src_buffer, const Buffer &dst_buffer, const std::vector<VkBufferCopy> &regions)
+void cmd_copy_buffer(const vku::CommandBuffer &command_buffer, const vku::Buffer &src_buffer, const vku::Buffer &dst_buffer, const std::vector<VkBufferCopy> &regions)
 {
     vkCmdCopyBuffer(command_buffer, src_buffer, dst_buffer, regions.size(), regions.data());
 }
 
 
-void cmd_bind_index_buffer(const CommandBuffer& command_buffer, const Buffer &buffer, VkDeviceSize offset, VkIndexType index_type)
+void cmd_bind_index_buffer(const vku::CommandBuffer& command_buffer, const vku::Buffer &buffer, VkDeviceSize offset, VkIndexType index_type)
 {
     vkCmdBindIndexBuffer(command_buffer, buffer, offset, index_type);
 }
 
 
-void cmd_draw_indexed(const CommandBuffer& command_buffer, uint32_t index_count, uint32_t instance_count, uint32_t first_index, int32_t vertex_offset, uint32_t first_instance)
+void cmd_draw_indexed(const vku::CommandBuffer& command_buffer, uint32_t index_count, uint32_t instance_count, uint32_t first_index, int32_t vertex_offset, uint32_t first_instance)
 {
     vkCmdDrawIndexed(command_buffer, index_count, instance_count, first_index, vertex_offset, first_instance);
+}
+
+
+template<typename T>
+py::class_<T> register_vku_class(py::module m, const char *name)
+{
+    return py::class_<T>(m, name)
+        .def("destroy", &T::destroy)
+        .def("is_valid", &T::is_valid);
+}
+
+class DescriptorPoolBuilder
+{
+public:
+    DescriptorPoolBuilder(const Device& d) : descriptor_pool_builder((VkDevice)d) { }
+
+    DescriptorPoolBuilder& add_descriptor_sets(const vku::DescriptorSetLayout& set_layout, uint32_t count = 1)
+    {
+        descriptor_pool_builder.add_descriptor_sets(set_layout, count);
+        return *this;
+    }
+
+    vku::DescriptorPool build()
+    {
+        auto result = descriptor_pool_builder.build();
+
+        if (!result)
+        {
+            // TODO: error handling
+        }
+
+        return result.get_value();
+    }
+private:
+    vku::DescriptorPoolBuilder descriptor_pool_builder;
+};
+
+/*
+
+    class DescriptorPoolBuilder
+    {
+    public:
+        DescriptorPoolBuilder() = delete;
+        DescriptorPoolBuilder(VkDevice d) : device(d) { }
+
+        inline DescriptorPoolBuilder& add_descriptor_sets(const DescriptorSetLayout &set_layout, uint32_t count=1)
+        {
+            max_sets += count;
+            for (uint16_t i = 0; i < static_cast<size_t>(DescriptorType::MAX); ++i)
+            {
+                descriptor_type_counts[i] += set_layout.descriptor_type_counts[i] * count;
+            }
+            return *this;
+        }
+
+        inline Result<VkDescriptorPool> build() const
+        {
+            VkDescriptorPool result{ VK_NULL_HANDLE };
+
+            std::vector<VkDescriptorPoolSize> pool_sizes{};
+            for (uint16_t i = 0; i < static_cast<size_t>(DescriptorType::MAX); ++i)
+            {
+                if (descriptor_type_counts[i] > 0)
+                {
+                    VkDescriptorPoolSize pool_size{};
+                    pool_size.type = to_vk(static_cast<DescriptorType>(i));
+                    pool_size.descriptorCount = descriptor_type_counts[i];
+                    pool_sizes.push_back(pool_size);
+                }
+            }
+
+            VkDescriptorPoolCreateInfo create_info{};
+            create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+            create_info.maxSets = max_sets;
+            create_info.poolSizeCount = pool_sizes.size();
+            create_info.pPoolSizes = pool_sizes.data();
+
+            auto vk_result = vkCreateDescriptorPool(device, &create_info, nullptr, &result);
+
+            if (vk_result != VK_SUCCESS)
+            {
+                // TODO: error and stuff
+            }
+
+            return Result<VkDescriptorPool>(result);
+        }
+    private:
+        VkDevice device{ VK_NULL_HANDLE };
+        uint32_t max_sets{ 0 };
+        DescriptorTypeCounts descriptor_type_counts{};
+    };
+*/
+
+
+class DescriptorSetLayoutBuilder
+{
+public:
+    DescriptorSetLayoutBuilder(const Device& device) : builder(device)
+    {
+    }
+
+    DescriptorSetLayoutBuilder& add_binding(uint32_t binding, VkDescriptorType descriptor_type, uint32_t descriptor_count, VkPipelineStageFlags stage_flags)
+    {
+        builder.add_binding(binding, descriptor_type, descriptor_count, stage_flags);
+        return *this;
+    }
+
+    vku::DescriptorSetLayout build() const
+    {
+        auto result = builder.build();
+
+        // TODO: error handling
+
+        return result.get_value();
+    }
+private:
+    vku::DescriptorSetLayoutBuilder builder;
+};
+
+
+class DescriptorSetBuilder
+{
+public:
+    DescriptorSetBuilder(const Device& d, const vku::DescriptorPool& dp, vku::DescriptorSetLayout l) : builder(d, dp, l) { }
+
+    DescriptorSetBuilder& write_uniform_buffer(uint32_t binding, uint32_t array_element, vku::Buffer buffer, VkDeviceSize offset, VkDeviceSize range)
+    {
+        builder.write_uniform_buffer(binding, array_element, buffer, offset, range);
+        return *this;
+    }
+
+    inline DescriptorSetBuilder& write_combined_image_sampler(uint32_t binding, uint32_t array_element, VkSampler sampler, VkImageView image_view, VkImageLayout image_layout)
+    {
+        builder.write_combined_image_sampler(binding, array_element, sampler, image_view, image_layout);
+        return *this;
+    }
+
+    inline vku::DescriptorSet build() const
+    {
+        auto result = builder.build();
+
+        // TODO: error handling
+
+        return result.get_value();
+    }
+private:
+    vku::DescriptorSetBuilder builder;
+};
+
+
+void cmd_bind_descriptor_sets(const vku::CommandBuffer &command_buffer, VkPipelineBindPoint bind_point, vku::PipelineLayout layout, uint32_t first_binding, const std::vector<vku::DescriptorSet> &descriptor_sets)
+{
+    std::vector<VkDescriptorSet> ds = get_handles<VkDescriptorSet>(descriptor_sets);
+    vkCmdBindDescriptorSets(command_buffer, bind_point, layout, first_binding, ds.size(), ds.data(), 0, nullptr);
 }
 
 
@@ -1291,7 +1544,9 @@ PYBIND11_MODULE(pyvku, m) {
         .def("cmd_draw", cmd_draw)
         .def("cmd_copy_buffer", cmd_copy_buffer)
         .def("cmd_bind_index_buffer", cmd_bind_index_buffer)
-        .def("cmd_draw_indexed", cmd_draw_indexed);
+        .def("cmd_draw_indexed", cmd_draw_indexed)
+        .def("load_image", load_image)
+        .def("cmd_bind_descriptor_sets", cmd_bind_descriptor_sets);
 
     py::class_<InstanceBuilder>(m, "InstanceBuilder")
         .def(py::init<>())
@@ -1352,8 +1607,9 @@ PYBIND11_MODULE(pyvku, m) {
     py::class_<Queue>(m, "Queue");
     py::class_<Image>(m, "Image");
     py::class_<ImageView>(m, "ImageView");
-    py::class_< ShaderModule>(m, "ShaderModule")
-        .def("destroy", &ShaderModule::destroy);;
+
+    register_vku_class<vku::ShaderModule>(m, "ShaderModule");
+    register_vku_class<vku::DescriptorPool>(m, "DescriptorPool");
 
     py::class_<FramebufferCreateInfo>(m, "FramebufferCreateInfo")
         .def(py::init<>())
@@ -1449,12 +1705,16 @@ PYBIND11_MODULE(pyvku, m) {
 
     py::class_<Framebuffer>(m, "Framebuffer");
     py::class_<Fence>(m, "Fence");
-    py::class_<DescriptorSetLayout>(m, "DescriptorSetLayout");
-    py::class_< Pipeline>(m, "Pipeline")
-        .def("destroy", &Pipeline::destroy);
 
-    py::class_<PipelineLayout>(m, "PipelineLayout")
-        .def("destroy", &PipelineLayout::destroy);
+    register_vku_class<vku::DescriptorSetLayout>(m, "DescriptorSetLayout");
+    register_vku_class<vku::DescriptorSet>(m, "DescriptorSet");
+
+    register_vku_class<vku::Pipeline>(m, "Pipeline")
+        .def("get_layout", [&](vku::Pipeline& self) -> vku::PipelineLayout {
+            return vku::PipelineLayout(self.get_device(), self.get_layout());
+        });
+
+    register_vku_class<vku::PipelineLayout>(m, "PipelineLayout");
 
     py::class_<FenceCreateInfo>(m, "FenceCreateInfo")
         .def(py::init<>())
@@ -1485,7 +1745,7 @@ PYBIND11_MODULE(pyvku, m) {
         .value("PRIMARY", VK_COMMAND_BUFFER_LEVEL_PRIMARY)
         .value("SECONDARY", VK_COMMAND_BUFFER_LEVEL_SECONDARY);
 
-    py::class_< CommandBuffer>(m, "CommandBuffer");
+    register_vku_class<vku::CommandBuffer>(m, "CommandBuffer");
 
     py::register_exception<SwapchainOutOfDateError>(m, "SwapchainOutOfDateError");
 
@@ -1573,23 +1833,45 @@ PYBIND11_MODULE(pyvku, m) {
         .def("add_viewport", &GraphicsPipelineBuilder::add_viewport)
         .def("set_pipeline_layout", &GraphicsPipelineBuilder::set_pipeline_layout)
         .def("set_render_pass", &GraphicsPipelineBuilder::set_render_pass)
-        .def("build", &GraphicsPipelineBuilder::build);
+        .def("set_viewport_count", &GraphicsPipelineBuilder::set_viewport_count)
+        .def("set_scissor_count", &GraphicsPipelineBuilder::set_scissor_count)
+        .def("build", &GraphicsPipelineBuilder::build)
+        .def("set_front_face", &GraphicsPipelineBuilder::set_front_face)
+        .def("set_cull_mode", &GraphicsPipelineBuilder::set_cull_mode);
+
+    py::enum_<VkFrontFace>(m, "FrontFace")
+        .value("CLOCKWISE", VK_FRONT_FACE_CLOCKWISE)
+        .value("COUNTERCLOCKWISE", VK_FRONT_FACE_COUNTER_CLOCKWISE);
+
+    py::enum_<VkCullModeFlagBits>(m, "CullMode")
+        .value("BACK_BIT", VK_CULL_MODE_BACK_BIT)
+        .value("FRONT_AND_BACK", VK_CULL_MODE_FRONT_AND_BACK)
+        .value("FRONT_BIT", VK_CULL_MODE_FRONT_BIT)
+        .value("NONE", VK_CULL_MODE_NONE);
 
     py::class_< BufferFactory>(m, "BufferFactory")
         .def(py::init<Device, PhysicalDevice>())
         .def("build", &BufferFactory::build);
 
-    py::class_<Buffer>(m, "Buffer")
-        .def("destroy", &Buffer::destroy)
-        .def("map_memory", &Buffer::map_memory, py::arg("size") = VK_WHOLE_SIZE, py::arg("offset") = 0)
-        .def("unmap_memory", &Buffer::unmap_memory)
-        .def("get_mapped", &Buffer::get_mapped);
+    py::class_<vku::Buffer>(m, "Buffer")
+        .def("destroy", &vku::Buffer::destroy)
+        .def("is_valid", &vku::Buffer::is_valid)
+        .def("map_memory", [&](vku::Buffer& buffer, VkDeviceSize size, VkDeviceSize offset) {
+            auto vk_result = buffer.map_memory(size, offset);
+            // TODO: error handling.
+        }, py::arg("size") = VK_WHOLE_SIZE, py::arg("offset") = 0)
+        .def("unmap_memory", &vku::Buffer::unmap_memory)
+        .def("get_mapped", [&](vku::Buffer& buffer) -> py::memoryview {
+            return py::memoryview::from_memory(buffer.get_mapped(), buffer.get_size());
+         })
+         .def("get_size", &vku::Buffer::get_size);
 
     py::enum_<VkBufferUsageFlagBits>(m, "BufferUsage", py::arithmetic())
         .value("VERTEX_BUFFER_BIT", VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)
         .value("INDEX_BUFFER_BIT", VK_BUFFER_USAGE_INDEX_BUFFER_BIT)
         .value("TRANSFER_DST_BIT", VK_BUFFER_USAGE_TRANSFER_DST_BIT)
-        .value("TRANSFER_SRC_BIT", VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+        .value("TRANSFER_SRC_BIT", VK_BUFFER_USAGE_TRANSFER_SRC_BIT)
+        .value("UNIFORM_BUFFER_BIT", VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
 
     py::enum_<VkMemoryPropertyFlagBits>(m, "MemoryProperty", py::arithmetic())
         .value("HOST_COHERENT_BIT", VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
@@ -1650,11 +1932,11 @@ PYBIND11_MODULE(pyvku, m) {
             .def("exit", &SingleTimeCommandExecutor::exit)
             .def("wait", &SingleTimeCommandExecutor::wait)
             .def("destroy", &SingleTimeCommandExecutor::enter)
-            .def("__enter__", [&](SingleTimeCommandExecutor& e) -> CommandBuffer { return e.enter();  })
+            .def("__enter__", [&](SingleTimeCommandExecutor& e) -> vku::CommandBuffer { return e.enter();  })
             .def("__exit__", [&](SingleTimeCommandExecutor& e, py::object exc_type, py::object exc_value, py::object traceback) { e.exit();  });
 
         py::class_<VkBufferCopy>(m, "BufferCopy")
-            .def(py::init<>())
+            .def(py::init<VkDeviceSize, VkDeviceSize, VkDeviceSize>(), py::arg("src_offset") = 0, py::arg("dst_offset") = 0, py::arg("size") = 0)
             .def_readwrite("size", &VkBufferCopy::size)
             .def_readwrite("dst_offset", &VkBufferCopy::dstOffset)
             .def_readwrite("src_offset", &VkBufferCopy::srcOffset);
@@ -1662,5 +1944,30 @@ PYBIND11_MODULE(pyvku, m) {
         py::enum_< VkIndexType>(m, "IndexType")
             .value("UINT16", VK_INDEX_TYPE_UINT16)
             .value("UINT32", VK_INDEX_TYPE_UINT32);
+
+        py::class_<ImageData>(m, "ImageData")
+            .def_readonly("channels", &ImageData::channels)
+            .def_readonly("height", &ImageData::height)
+            .def_readonly("width", &ImageData::width)
+            .def("is_valid", &ImageData::is_valid)
+            .def("get_data", &ImageData::get_data);
+
+        py::class_< DescriptorPoolBuilder>(m, "DescriptorPoolBuilder")
+            .def(py::init<Device>())
+            .def("build", &DescriptorPoolBuilder::build)
+            .def("add_descriptor_sets", &DescriptorPoolBuilder::add_descriptor_sets);
+
+        py::class_< DescriptorSetLayoutBuilder>(m, "DescriptorSetLayoutBuilder")
+            .def(py::init<Device>())
+            .def("build", &DescriptorSetLayoutBuilder::build)
+            .def("add_binding", &DescriptorSetLayoutBuilder::add_binding);
+
+        py::class_< DescriptorSetBuilder>(m, "DescriptorSetBuilder")
+            .def(py::init<Device, vku::DescriptorPool, vku::DescriptorSetLayout>())
+            .def("build", &DescriptorSetBuilder::build)
+            .def("write_uniform_buffer", &DescriptorSetBuilder::write_uniform_buffer);
+
+        py::enum_<VkDescriptorType>(m, "DescriptorType")
+            .value("UNIFORM_BUFFER", VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
 }
 

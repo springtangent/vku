@@ -41,6 +41,7 @@ SOFTWARE.
 #define GLM_FORCE_RADIANS
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtx/string_cast.hpp>
 
 #include "example_application.h"
 
@@ -239,7 +240,7 @@ public:
 		// copy the staging buffer to the vertex buffer.
 		executor.init(device, command_pool, graphics_queue);
 
-		vku::Result<VkCommandBuffer> enter_result = executor.enter();
+		auto enter_result = executor.enter();
 
 		if (!enter_result)
 		{
@@ -478,7 +479,7 @@ public:
 		return true;
 	}
 
-	inline void update(VkExtent2D swapchain_extent)
+	inline bool update(VkExtent2D swapchain_extent)
 	{
 		static auto startTime = std::chrono::high_resolution_clock::now();
 
@@ -493,6 +494,8 @@ public:
 
 		void* data = uniform_buffer.get_mapped();
 		memcpy(data, &ubo, sizeof(ubo));
+
+		return true;
 	}
 
 	bool record_command_buffer_render_pass(VkCommandBuffer command_buffer, SharedContext &shared_context)
@@ -526,9 +529,7 @@ class UniformBufferExampleApplication : public ExampleApplication
 public:
 	virtual bool update_frame_data(uint32_t current_frame) override
 	{
-		frame_data[current_frame].update(vkb_swapchain.extent);
-
-		return true;
+		return frame_data[current_frame].update(vkb_swapchain.extent);;
 	}
 
 	virtual bool record_command_buffer_render_pass(uint32_t i) override

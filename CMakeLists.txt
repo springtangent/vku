@@ -27,6 +27,7 @@ add_subdirectory("${VKU_EXAMPLES_EXTERN_DIR}/glfw")
 add_subdirectory("${VKU_EXAMPLES_EXTERN_DIR}/vk-bootstrap")
 add_subdirectory("${VKU_EXAMPLES_EXTERN_DIR}/pybind11")
 include_directories("${VKU_EXAMPLES_EXTERN_DIR}/glm")
+include_directories("${VKU_EXAMPLES_EXTERN_DIR}/stb")
 
 include_directories(include ${Vulkan_INCLUDE_DIRS})
 include_directories("${VKU_EXAMPLES_EXTERN_DIR}/glm")
