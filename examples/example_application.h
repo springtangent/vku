@@ -715,7 +715,6 @@ protected:
 	std::vector<VkImageView> swapchain_image_views{};
 	std::vector<VkFramebuffer> framebuffers{};
 
-	// TODO: these should be arrays...
 	std::array<VkSemaphore, MAX_FRAMES_IN_FLIGHT> available_semaphores{};
 	std::array<VkSemaphore, MAX_FRAMES_IN_FLIGHT> finished_semaphore{};
 	std::array<VkFence, MAX_FRAMES_IN_FLIGHT> in_flight_fences{};

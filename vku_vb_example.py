@@ -354,11 +354,11 @@ class SharedContext:
         self.vulkan_context = vulkan_context
 
     def init(self):
-        self.buffer_factory = vku.BufferFactory(self.vulkan_context.device, self.vulkan_context.physical_device)
         pipeline_layout_builder = vku.PipelineLayoutBuilder(self.vulkan_context.device)
         self.pipeline_layout = pipeline_layout_builder.build()
 
-        self.vertex_buffer = self.buffer_factory.build(len(VERTEX_BYTES), vku.BufferUsage.VERTEX_BUFFER_BIT, vku.MemoryProperty.HOST_VISIBLE_BIT | vku.MemoryProperty.HOST_COHERENT_BIT)
+        factory = vku.BufferFactory(self.vulkan_context.device, self.vulkan_context.physical_device)
+        self.vertex_buffer = factory.build(len(VERTEX_BYTES), vku.BufferUsage.VERTEX_BUFFER_BIT, vku.MemoryProperty.HOST_VISIBLE_BIT | vku.MemoryProperty.HOST_COHERENT_BIT)
         self.vertex_buffer.map_memory()
         mem = self.vertex_buffer.get_mapped()
         mem[:] = VERTEX_BYTES
@@ -451,10 +451,10 @@ class GraphicsContext:
 
     def record_command_buffer(self, command_buffer, scene):
         vku.cmd_bind_pipeline(command_buffer, vku.PipelineBindPoint.GRAPHICS, self.shared_context.graphics_pipeline)
-
+        assert(self.shared_context.vertex_buffer.is_valid())
         vertex_buffers = [ self.shared_context.vertex_buffer ]
         offsets = [ 0 ]
-        vku.cmd_bind_vertex_buffers(command_buffer, 0, 1, vertex_buffers, offsets)
+        vku.cmd_bind_vertex_buffers(command_buffer, 0, vertex_buffers, offsets)
 
         vku.cmd_draw(command_buffer, len(VERTICES), 1, 0, 0)
 
@@ -466,6 +466,7 @@ class GraphicsContext:
             return
 
         command_buffer = self.vulkan_context.begin_record_command_buffer()
+
         frame_context = self.frame_contexts[current_frame]
 
         self.vulkan_context.begin_render_pass()

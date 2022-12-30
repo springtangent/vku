@@ -315,23 +315,6 @@ class VulkanContext:
 
         return self.current_frame
 
-    def draw_frame(self):
-        try:
-            self.begin_draw_frame()
-        except vku.SwapchainOutOfDateError as sc_error:
-            self.recreate_swapchain()
-            return
-
-        # TODO: this needs to be done outside of this class,
-        #       in a callback or something.
-        self.update_frame_data(self.current_frame)
-
-        # TODO: this needs to be done outside of this class,
-        #       in a callback or something.
-        self.record_command_buffer()
-
-        self.end_draw_frame()
-
     def end_draw_frame(self):
         submit_info = vku.SubmitInfo()
         submit_info.wait_semaphores = [ self.available_semaphores[self.current_frame] ]
@@ -387,7 +370,6 @@ class SharedContext:
 
         # TODO: figure out an interface to stop on an error.
         with executor as command_buffer:
-            print(command_buffer)
             copy_region = vku.BufferCopy()
             copy_region.dst_offset = 0
             copy_region.src_offset = 0
@@ -428,9 +410,6 @@ class SharedContext:
 
         with open("resources/shaders/triangle_buffer.frag.spv", "rb") as frag_file:
             frag_bytes = frag_file.read()
-
-        print(len(vert_bytes))
-        print(len(frag_bytes))
 
         vert_module = vku.create_shader_module(self.vulkan_context.device, vert_bytes)
         frag_module = vku.create_shader_module(self.vulkan_context.device, frag_bytes)
@@ -511,7 +490,7 @@ class GraphicsContext:
 
         vertex_buffers = [ self.shared_context.vertex_buffer ]
         offsets = [ 0 ]
-        vku.cmd_bind_vertex_buffers(command_buffer, 0, 1, vertex_buffers, offsets)
+        vku.cmd_bind_vertex_buffers(command_buffer, 0, vertex_buffers, offsets)
         vku.cmd_bind_index_buffer(command_buffer, self.shared_context.index_buffer, 0, vku.IndexType.UINT16)
 
         vku.cmd_draw_indexed(command_buffer, len(INDICES), 1, 0, 0, 0)

@@ -1272,13 +1272,10 @@ namespace vku
 		{
 			auto vk_result = vkWaitForFences(device, 1, &fence, true, UINT64_MAX);
 
-			Error error{};
-
 			if (vk_result != VK_SUCCESS)
 			{
 				// we have a valid command buffer, but there was an error ending the single time commands.
-				error = Error{ detail::make_error_code(detail::CommandBufferExecutorError::wait_failed) };
-				return { error };
+				return { Error{ detail::make_error_code(detail::CommandBufferExecutorError::wait_failed) } };
 			}
 
 			return {};
