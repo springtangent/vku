@@ -26,6 +26,7 @@ set(VKU_EXAMPLES_EXTERN_DIR "extern")
 add_subdirectory("${VKU_EXAMPLES_EXTERN_DIR}/glfw")
 add_subdirectory("${VKU_EXAMPLES_EXTERN_DIR}/vk-bootstrap")
 add_subdirectory("${VKU_EXAMPLES_EXTERN_DIR}/pybind11")
+add_subdirectory("${VKU_EXAMPLES_EXTERN_DIR}/fmt")
 include_directories("${VKU_EXAMPLES_EXTERN_DIR}/glm")
 include_directories("${VKU_EXAMPLES_EXTERN_DIR}/stb")
 
@@ -48,7 +49,7 @@ target_link_libraries(vku_uniform_buffer_example PRIVATE ${Vulkan_LIBRARIES} glf
 # pybind11_add_module(vku_examples source/pyvku.cpp)
 
 add_library(pyvku MODULE source/pyvku.cpp)
-target_link_libraries(pyvku PRIVATE pybind11::module pybind11::lto pybind11::windows_extras ${Vulkan_LIBRARIES} vk-bootstrap::vk-bootstrap glfw)
+target_link_libraries(pyvku PRIVATE pybind11::module pybind11::lto pybind11::windows_extras ${Vulkan_LIBRARIES} vk-bootstrap::vk-bootstrap glfw fmt::fmt)
 pybind11_extension(pyvku)
 if(NOT MSVC AND NOT ${CMAKE_BUILD_TYPE} MATCHES Debug|RelWithDebInfo)
     # Strip unnecessary sections of the binary on Linux/macOS

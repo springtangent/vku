@@ -31,6 +31,7 @@ SOFTWARE.
 #include <limits>
 #include <array>
 #include <optional>
+#include <iostream>
 
 namespace vku
 {
@@ -129,6 +130,8 @@ namespace vku
 			result.clear();
 			return *this;
 		}
+	
+		std::error_code get_error() const { assert(!has_value); return error.type; }
 	private:
 		inline void destroy()
 		{
@@ -370,49 +373,186 @@ namespace vku
 	}
 
 
-	template<typename T>
+	class Instance
+	{
+	public:
+		Instance(const vkb::Instance& value) : handle(value) { }
+
+		inline operator VkInstance() const { return handle; };
+		vkb::Instance handle;
+
+		void destroy()
+		{
+			vkb::destroy_instance(handle);
+		}
+	};
+
+
+	// forward decs for device
+	class Queue;
+
+	class Device
+	{
+	public:
+		Device(vkb::Device& d) : device(d) { }
+
+		inline void destroy() noexcept
+		{
+			vkb::destroy_device(device);
+		}
+
+		inline operator VkDevice() const
+		{
+			return (VkDevice)device;
+		}
+
+		void wait_idle()
+		{
+			auto vk_result = vkDeviceWaitIdle(device);
+			// TODO: error handling.
+		}
+
+		Queue get_queue(vkb::QueueType queue_type);
+
+		uint32_t get_queue_index(vkb::QueueType queue_type) const
+		{
+			auto res = device.get_queue_index(queue_type);
+
+			if (!res.has_value())
+			{
+				throw std::runtime_error(res.error().message());
+			}
+
+			return res.value();
+		}
+
+		vkb::Device& get_device() { return device; }
+	protected:
+		vkb::Device device;
+	};
+
+
+	template<typename T, typename P = VkDevice>
 	class VkHandle
 	{
 	public:
-		VkHandle() : device(VK_NULL_HANDLE), handle(VK_NULL_HANDLE) { }
+		VkHandle() : parent(VK_NULL_HANDLE), handle(VK_NULL_HANDLE) { }
 
-		VkHandle(VkDevice d, T h) : device(d), handle(h) { }
+		VkHandle(P p, T h) : parent(p), handle(h) { }
 
 		inline operator T() const
 		{
 			return handle;
 		}
 
-		inline VkDevice get_device() const
+		inline P get_parent() const
 		{
-			return device;
+			return parent;
 		}
 
 		inline void clear()
 		{
-			device = VK_NULL_HANDLE;
+			parent = VK_NULL_HANDLE;
 			handle = VK_NULL_HANDLE;
 		}
 
 		inline bool is_valid() const
 		{
-			return handle != VK_NULL_HANDLE;
+			return parent != VK_NULL_HANDLE && handle != VK_NULL_HANDLE;
 		}
 	protected:
-		VkDevice device{ VK_NULL_HANDLE };
+		P parent{ VK_NULL_HANDLE };
 		T handle{ VK_NULL_HANDLE };
 	};
 
-	/*
-	class Queue : public VkHandle<VkQueue> { };
-	class Surface : public VkHandle<VkSurfaceKHR> { };
-	class ImageView : public VkHandle<VkImageView> { };
-	class RenderPass : public VkHandle<VkRenderPass> { };
-	class Framebuffer : public VkHandle<VkFramebuffer> { };
-	class CommandPool : public VkHandle<VkCommandPool> { };
-	class Semaphore : public VkHandle<VkSemaphore> { };
-	class DescriptorSetLayout : public VkHandle<VkDescriptorSetLayout> { };
-	*/
+
+
+
+
+	class Surface : public VkHandle<VkSurfaceKHR, VkInstance>
+	{
+	public:
+		Surface() : VkHandle<VkSurfaceKHR, VkInstance>(VK_NULL_HANDLE, VK_NULL_HANDLE) {}
+
+		Surface(VkInstance p, VkSurfaceKHR h) : VkHandle<VkSurfaceKHR, VkInstance>(p, h) {}
+
+		inline void destroy() noexcept
+		{
+			if (is_valid())
+			{
+				vkDestroySurfaceKHR(parent, handle, nullptr);
+			}
+			clear();
+		}
+	};
+
+	class RenderPass : public VkHandle<VkRenderPass>
+	{
+	public:
+		RenderPass() : VkHandle<VkRenderPass>(VK_NULL_HANDLE, VK_NULL_HANDLE) {}
+
+		RenderPass(VkDevice d, VkRenderPass m) : VkHandle<VkRenderPass>(d, m) {}
+
+		inline void destroy() noexcept
+		{
+			if (is_valid())
+			{
+				vkDestroyRenderPass(parent, handle, nullptr);
+			}
+			clear();
+		}
+	};
+
+	class Framebuffer : public VkHandle<VkFramebuffer>
+	{
+	public:
+		Framebuffer() : VkHandle<VkFramebuffer>(VK_NULL_HANDLE, VK_NULL_HANDLE) {}
+
+		Framebuffer(VkDevice d, VkFramebuffer h) : VkHandle<VkFramebuffer>(d, h) {}
+
+		inline void destroy() noexcept
+		{
+			if (is_valid())
+			{
+				vkDestroyFramebuffer(parent, handle, nullptr);
+			}
+			clear();
+		}
+	};
+
+	class Semaphore : public VkHandle<VkSemaphore>
+	{
+	public:
+		Semaphore() : VkHandle<VkSemaphore>(VK_NULL_HANDLE, VK_NULL_HANDLE) {}
+
+		Semaphore(VkDevice d, VkSemaphore h) : VkHandle<VkSemaphore>(d, h) {}
+
+		inline void destroy() noexcept
+		{
+			if (is_valid())
+			{
+				vkDestroySemaphore(parent, handle, nullptr);
+			}
+			clear();
+		}
+	};
+
+	class ImageView : public VkHandle<VkImageView>
+	{
+	public:
+		ImageView() : VkHandle<VkImageView>(VK_NULL_HANDLE, VK_NULL_HANDLE) {}
+
+		ImageView(VkDevice d, VkImageView m) : VkHandle<VkImageView>(d, m) {}
+
+		inline void destroy() noexcept
+		{
+			if (is_valid())
+			{
+				vkDestroyImageView(parent, handle, nullptr);
+			}
+			clear();
+		}
+	};
 
 	class DescriptorPool : public VkHandle<VkDescriptorPool>
 	{
@@ -425,7 +565,7 @@ namespace vku
 		{
 			if (is_valid())
 			{
-				vkDestroyDescriptorPool(device, handle, nullptr);
+				vkDestroyDescriptorPool(parent, handle, nullptr);
 			}
 			clear();
 		}
@@ -443,7 +583,7 @@ namespace vku
 		{
 			if (is_valid())
 			{
-				vkFreeDescriptorSets(device, descriptor_pool, 1, &handle);
+				vkFreeDescriptorSets(parent, descriptor_pool, 1, &handle);
 			}
 			clear();
 		}
@@ -473,14 +613,21 @@ namespace vku
 
 		inline void destroy()
 		{
+			if (parent == VK_NULL_HANDLE)
+			{
+				// we can't really destroy it; this could be intentional for swapchain images, but if it's
+				// not it should at least cause validation errors;
+				return;
+			}
+
 			if (handle != VK_NULL_HANDLE)
 			{
-				vkDestroyImage(device, handle, nullptr);
+				vkDestroyImage(parent, handle, nullptr);
 			}
 
 			if (memory != VK_NULL_HANDLE)
 			{
-				vkFreeMemory(device, memory, nullptr);
+				vkFreeMemory(parent, memory, nullptr);
 			}
 
 			clear();
@@ -493,11 +640,30 @@ namespace vku
 			source_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
 		}
 
+		VkImageLayout layout{ VK_IMAGE_LAYOUT_UNDEFINED };
 		VkPipelineStageFlagBits source_stage{ VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT };
-		VkAccessFlagBits src_access_mask{ VK_ACCESS_NONE };
+		VkAccessFlags src_access_mask{ VK_ACCESS_NONE };
 	protected:
 		VkDeviceMemory memory{ VK_NULL_HANDLE };
-		
+	};
+
+
+	class Sampler : public VkHandle<VkSampler>
+	{
+	public:
+		Sampler() : VkHandle<VkSampler>() { }
+		Sampler(VkDevice d, VkSampler s) : VkHandle<VkSampler>(d, s) { }
+
+		inline void destroy()
+		{
+			if (parent != VK_NULL_HANDLE && handle != VK_NULL_HANDLE)
+			{
+				vkDestroySampler(parent, handle, nullptr);
+			}
+
+			clear();
+		}
+	protected:
 	};
 
 
@@ -513,6 +679,7 @@ namespace vku
 			if (vk_create_image_result != VK_SUCCESS)
 			{
 				// TODO: error handling.
+				return Result<Image>{ Error{} };
 			}
 
 			VkMemoryRequirements mem_reqs;
@@ -528,6 +695,7 @@ namespace vku
 			if (vk_alloc_result != VK_SUCCESS)
 			{
 				// TODO: error handling
+				return Result<Image>{ Error{} };
 			}
 
 			vkBindImageMemory(device, image, image_memory, 0);
@@ -535,7 +703,7 @@ namespace vku
 			return Image(device, image, image_memory);
 		}
 		
-		Result<Image> build_image_2d(VkExtent2D extent, VkFormat format, VkImageUsageFlags usage, VkMemoryPropertyFlags properties)
+		Result<Image> build_image_2d(VkExtent2D extent, VkFormat format, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImageTiling tiling= VK_IMAGE_TILING_OPTIMAL)
 		{
 			VkImageCreateInfo image_info{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
 			image_info.pNext = nullptr;
@@ -569,7 +737,7 @@ namespace vku
 		{
 			if (is_valid())
 			{
-				vkDestroyShaderModule(device, handle, nullptr);
+				vkDestroyShaderModule(parent, handle, nullptr);
 			}
 			clear();
 		}
@@ -587,7 +755,7 @@ namespace vku
 		{
 			if (is_valid())
 			{
-				vkDestroyPipelineLayout(device, handle, nullptr);
+				vkDestroyPipelineLayout(parent, handle, nullptr);
 			}
 			clear();
 		}
@@ -605,7 +773,7 @@ namespace vku
 		{
 			if (is_valid())
 			{
-				vkDestroyPipeline(device, handle, nullptr);
+				vkDestroyPipeline(parent, handle, nullptr);
 			}
 			clear();
 		}
@@ -638,12 +806,12 @@ namespace vku
 		{
 			if (handle != VK_NULL_HANDLE)
 			{
-				vkDestroyBuffer(device, handle, nullptr);
+				vkDestroyBuffer(parent, handle, nullptr);
 			}
 
 			if (memory != VK_NULL_HANDLE)
 			{
-				vkFreeMemory(device, memory, nullptr);
+				vkFreeMemory(parent, memory, nullptr);
 			}
 
 			clear();
@@ -652,7 +820,7 @@ namespace vku
 		inline VkResult map_memory(VkDeviceSize s = VK_WHOLE_SIZE, VkDeviceSize offset = 0)
 		{
 			// TODO: test for validity, convey non-vk errors.
-			return vkMapMemory(device, memory, offset, s, offset, &mapped);
+			return vkMapMemory(parent, memory, offset, s, offset, &mapped);
 		}
 
 		inline void* get_mapped() const
@@ -667,7 +835,7 @@ namespace vku
 
 		inline void unmap_memory()
 		{
-			vkUnmapMemory(device, memory);
+			vkUnmapMemory(parent, memory);
 			mapped = nullptr;
 		}
 
@@ -682,6 +850,9 @@ namespace vku
 		VkDeviceMemory memory{ VK_NULL_HANDLE };
 		VkDeviceSize size{ 0 };
 		void* mapped{ nullptr };
+		VkDeviceAddress device_address{ 0 };
+
+		friend class BufferAddressGetter;
 	};
 
 
@@ -695,11 +866,75 @@ namespace vku
 		{
 			if (is_valid())
 			{
-				vkDestroyFence(device, handle, nullptr);
+				vkDestroyFence(parent, handle, nullptr);
 			}
 			clear();
 		}
 	};
+
+
+	class CommandPool : public VkHandle<VkCommandPool>
+	{
+	public:
+		CommandPool() : VkHandle<VkCommandPool>() {}
+		CommandPool(VkDevice d, VkCommandPool p) : VkHandle<VkCommandPool>(d, p) { }
+
+		inline void destroy()
+		{
+			if (is_valid())
+			{
+				vkDestroyCommandPool(parent, handle, nullptr);
+			}
+
+			clear();
+		}
+	};
+
+	/*
+	class Semaphore : public VkHandle<VkSemaphore>
+	{
+	public:
+		Semaphore() : VkHandle<VkSemaphore>() {}
+		Semaphore(VkDevice d, VkSemaphore p) : VkHandle<VkSemaphore>(d, p) { }
+
+		inline void destroy()
+		{
+			if (is_valid())
+			{
+				vkDestroySemaphore(parent, handle, nullptr);
+			}
+
+			clear();
+		}
+	};
+	*/
+
+
+	class Queue : public VkHandle<VkQueue>
+	{
+	public:
+		Queue() : VkHandle<VkQueue>() {}
+		Queue(VkDevice d, VkQueue p) : VkHandle<VkQueue>(d, p) { }
+
+		inline void destroy()
+		{
+			// you don't need to destroy queues...
+			clear();
+		}
+	};
+
+
+	Queue Device::get_queue(vkb::QueueType queue_type)
+	{
+		auto res = device.get_queue(queue_type);
+
+		if (!res.has_value())
+		{
+			throw std::runtime_error(res.error().message());
+		}
+
+		return Queue(device, res.value());
+	}
 
 
 	class CommandBuffer : public VkHandle<VkCommandBuffer>
@@ -717,7 +952,7 @@ namespace vku
 		{
 			if (is_valid())
 			{
-				vkFreeCommandBuffers(device, command_pool, 1, &handle);
+				vkFreeCommandBuffers(parent, command_pool, 1, &handle);
 			}
 			clear();
 		}
@@ -838,7 +1073,7 @@ namespace vku
 		{
 			if (is_valid())
 			{
-				vkDestroyDescriptorSetLayout(device, handle, nullptr);
+				vkDestroyDescriptorSetLayout(parent, handle, nullptr);
 			}
 
 			clear();
@@ -899,6 +1134,16 @@ namespace vku
 			return *this;
 		}
 
+		inline PipelineLayoutBuilder& add_push_constant_range(VkShaderStageFlags stage_flags, uint32_t offset, uint32_t size)
+		{
+			VkPushConstantRange r;
+			r.stageFlags = stage_flags;
+			r.offset = offset;
+			r.size = size;
+			push_constant_ranges.push_back(r);
+			return *this;
+		}
+
 		Result<PipelineLayout> build() const
 		{
 			VkPipelineLayout pipeline_layout{ VK_NULL_HANDLE };
@@ -910,6 +1155,9 @@ namespace vku
 			create_info.pSetLayouts = descriptor_set_layouts.data();
 			create_info.setLayoutCount = descriptor_set_layouts.size();
 
+			create_info.pPushConstantRanges = push_constant_ranges.data();
+			create_info.pushConstantRangeCount = push_constant_ranges.size();
+
 			VkResult vk_result = vkCreatePipelineLayout(device, &create_info, nullptr, &pipeline_layout);
 			if (vk_result != VK_SUCCESS)
 			{
@@ -920,6 +1168,7 @@ namespace vku
 	private:
 		VkDevice device{ VK_NULL_HANDLE };
 		std::vector<VkDescriptorSetLayout> descriptor_set_layouts{};
+		std::vector<VkPushConstantRange> push_constant_ranges{};
 	};
 
 
@@ -1068,6 +1317,16 @@ namespace vku
 			multisampling.sampleShadingEnable = VK_FALSE;
 			multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
+			// TODO: we need to expose this...
+			VkPipelineDepthStencilStateCreateInfo depthStencil{};
+			depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+			depthStencil.depthTestEnable = VK_TRUE;
+			depthStencil.depthWriteEnable = VK_TRUE;
+			depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+			depthStencil.depthBoundsTestEnable = VK_FALSE;
+			depthStencil.stencilTestEnable = VK_FALSE;
+
+
 			VkPipelineColorBlendStateCreateInfo color_blending = {};
 			color_blending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
 			color_blending.logicOpEnable = VK_FALSE;
@@ -1094,6 +1353,7 @@ namespace vku
 			create_info.pViewportState = &viewport_state;
 			create_info.pRasterizationState = &rasterizer;
 			create_info.pMultisampleState = &multisampling;
+			create_info.pDepthStencilState = &depthStencil;
 			create_info.pColorBlendState = &color_blending;
 			create_info.pDynamicState = &dynamic_info;
 			create_info.layout = pipeline_layout;
@@ -1128,6 +1388,20 @@ namespace vku
 
 		std::vector< VkVertexInputBindingDescription> vertex_bindings{};
 		std::vector<VkVertexInputAttributeDescription> vertex_attributes{};
+	};
+
+
+	class MemoryAllocator
+	{
+	public:
+
+	};
+
+
+
+	class DedicatedMemoryAllocator
+	{
+	public:
 	};
 
 
@@ -1225,11 +1499,13 @@ namespace vku
 			if (command_buffer != VK_NULL_HANDLE)
 			{
 				vkFreeCommandBuffers(device, command_pool, 1, &command_buffer);
+				command_buffer = VK_NULL_HANDLE;
 			}
 
 			if (fence != VK_NULL_HANDLE)
 			{
 				vkDestroyFence(device, fence, nullptr);
+				fence = VK_NULL_HANDLE;
 			}
 		}
 
@@ -1336,6 +1612,7 @@ namespace vku
 		bool end_single_time_commands(VkCommandBuffer commandBuffer, Error &error)
 		{
 			auto vk_result = vkEndCommandBuffer(commandBuffer);
+
 			if (vk_result != VK_SUCCESS)
 			{
 				error = Error{ detail::make_error_code(detail::CommandBufferExecutorError::end_command_buffer_failed), vk_result };
@@ -1477,6 +1754,97 @@ namespace vku
 		DescriptorTypeCounts descriptor_type_counts{};
 	};
 
+	VkImageSubresourceRange get_default_subresource_range(VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT)
+	{
+		return VkImageSubresourceRange{ aspect, 0, 1, 0, 1 };
+	}
+
+	VkImageViewCreateInfo get_default_image_view_create_info(VkImage image, VkFormat format, VkImageViewType view_type=VK_IMAGE_VIEW_TYPE_2D, VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT)
+	{
+		return VkImageViewCreateInfo{
+			VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+			nullptr,
+			0,
+			image,
+			view_type,
+			format,
+			{},
+			get_default_subresource_range(aspect)
+		};
+	}
+
+	class ImageViewFactory
+	{
+	public:
+		ImageViewFactory(VkDevice d) : device(d) { }
+
+		Result<ImageView> build2D(const Image &image, VkFormat format, VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT) const
+		{
+			VkImageView result{ VK_NULL_HANDLE };
+			VkImageViewCreateInfo create_info = get_default_image_view_create_info(image, format);
+			create_info.subresourceRange.aspectMask = aspect;
+			auto vk_result = vkCreateImageView(device, &create_info, nullptr, &result);
+
+			if (vk_result != VK_SUCCESS)
+			{
+				// TODO: error handling.
+			}
+
+			return { ImageView(device, result) };
+		}
+
+	private:
+		VkDevice device{ VK_NULL_HANDLE };
+	};
+
+
+	VkSamplerCreateInfo default_sampler_create_info(float max_anisotropy)
+	{
+		VkSamplerCreateInfo samplerInfo{};
+
+		samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+		samplerInfo.magFilter = VK_FILTER_LINEAR;
+		samplerInfo.minFilter = VK_FILTER_LINEAR;
+		samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+		samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+		samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+		samplerInfo.anisotropyEnable = VK_TRUE;
+		samplerInfo.maxAnisotropy = max_anisotropy;
+		samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+		samplerInfo.unnormalizedCoordinates = VK_FALSE;
+		samplerInfo.compareEnable = VK_FALSE;
+		samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+		samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+
+		return samplerInfo;
+	}
+
+	class SamplerFactory
+	{
+	public:
+		SamplerFactory(VkDevice d, VkPhysicalDevice pd) : device(d), physical_device(pd) { }
+
+		Result<Sampler> build() const
+		{
+			VkPhysicalDeviceProperties properties{};
+			VkSampler result{ VK_NULL_HANDLE };
+			vkGetPhysicalDeviceProperties(physical_device, &properties);
+
+			auto samplerInfo = default_sampler_create_info(properties.limits.maxSamplerAnisotropy);
+
+			if (vkCreateSampler(device, &samplerInfo, nullptr, &result) != VK_SUCCESS)
+			{
+				// throw std::runtime_error("failed to create texture sampler!");
+				return { Error{} };
+			}
+
+			return { Sampler(device, result) };
+		}
+	private:
+		VkDevice device{ VK_NULL_HANDLE };
+		VkPhysicalDevice physical_device{ VK_NULL_HANDLE };
+	};
+
 	class DescriptorSetBuilder
 	{
 	public:
@@ -1487,24 +1855,38 @@ namespace vku
 
 		inline DescriptorSetBuilder& write_uniform_buffer(uint32_t binding, uint32_t array_element, VkBuffer buffer, VkDeviceSize offset, VkDeviceSize range)
 		{
-			UniformBufferWrite write{};
+			BufferWrite write{};
 			write.binding = binding;
 			write.array_element = array_element;
 			write.buffer = buffer;
 			write.offset = offset;
 			write.range = range;
-			uniform_buffer_writes.push_back(write);
+			write.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+			buffer_writes.push_back(write);
 			return *this;
 		}
 
-		inline DescriptorSetBuilder& write_combined_image_sampler(uint32_t binding, uint32_t array_element, VkSampler sampler, VkImageView image_view, VkImageLayout image_layout)
+		inline DescriptorSetBuilder& write_storage_buffer(uint32_t binding, uint32_t array_element, VkBuffer buffer, VkDeviceSize offset, VkDeviceSize range)
+		{
+			BufferWrite write{};
+			write.binding = binding;
+			write.array_element = array_element;
+			write.buffer = buffer;
+			write.offset = offset;
+			write.range = range;
+			write.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			buffer_writes.push_back(write);
+			return *this;
+		}
+
+		inline DescriptorSetBuilder& write_combined_image_sampler(uint32_t binding, uint32_t array_element, const Image &image, const ImageView &image_view, const Sampler &sampler)
 		{
 			CombinedImageSamplerWrite write{};
 			write.binding = binding;
 			write.array_element = array_element;
 			write.sampler = sampler;
 			write.image_view = image_view;
-			write.image_layout = image_layout;
+			write.image_layout = image.layout;
 			combined_image_sampler_writes.push_back(write);
 			return *this;
 		}
@@ -1531,26 +1913,24 @@ namespace vku
 			VkWriteDescriptorSet w{};
 			w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 			w.dstSet = result;
-			std::vector<VkWriteDescriptorSet> writes(uniform_buffer_writes.size() + combined_image_sampler_writes.size(), w);
+			std::vector<VkWriteDescriptorSet> writes(buffer_writes.size() + combined_image_sampler_writes.size(), w);
 
 			// populate the bufferinfos
-			std::vector<VkDescriptorBufferInfo> buffer_infos(uniform_buffer_writes.size());
+			std::vector<VkDescriptorBufferInfo> buffer_infos(buffer_writes.size());
+			std::vector<VkDescriptorImageInfo> image_infos(combined_image_sampler_writes.size());
 
 			// populate the buffer writes
 			uint32_t write_index = 0;
 			uint32_t buffer_index = 0;
-			for (const auto &uniform_buffer_write: uniform_buffer_writes)
+			uint32_t image_index = 0;
+
+			for (const auto &uniform_buffer_write: buffer_writes)
 			{
 				uniform_buffer_write.populate(writes[write_index], buffer_infos[buffer_index]);
 				buffer_index += 1;
 				write_index += 1;
 			}
 
-			// populate the image_infos
-			std::vector<VkDescriptorImageInfo> image_infos(combined_image_sampler_writes.size());
-
-			// populate the image writes
-			uint32_t image_index = 0;
 			for (const auto &combined_image_sampler_write: combined_image_sampler_writes)
 			{
 				combined_image_sampler_write.populate(writes[write_index], image_infos[image_index]);
@@ -1564,19 +1944,21 @@ namespace vku
 			return Result<DescriptorSet>(DescriptorSet(device, result, descriptor_pool));
 		}
 	private:
-		struct UniformBufferWrite
+		struct BufferWrite
 		{
 			uint32_t binding;
 			uint32_t array_element;
 			VkBuffer buffer;
 			VkDeviceSize offset;
 			VkDeviceSize range;
+			VkDescriptorType type;
 
 			inline void populate(VkWriteDescriptorSet& write, VkDescriptorBufferInfo& buffer_info) const
 			{
 				write.pBufferInfo = &buffer_info;
+				write.dstBinding = binding;
 				write.descriptorCount = 1;
-				write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+				write.descriptorType = type;
 				write.dstArrayElement = array_element;
 
 				buffer_info.buffer = buffer;
@@ -1596,8 +1978,9 @@ namespace vku
 			inline void populate(VkWriteDescriptorSet& write, VkDescriptorImageInfo &image_info) const
 			{
 				write.pImageInfo = &image_info;
+				write.dstBinding = binding;
 				write.descriptorCount = 1;
-				write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+				write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 				write.dstArrayElement = array_element;
 
 				image_info.imageLayout = image_layout;
@@ -1610,7 +1993,48 @@ namespace vku
 		VkDescriptorSetLayout layout{ VK_NULL_HANDLE };
 		VkDescriptorPool descriptor_pool{ VK_NULL_HANDLE };
 
-		std::vector<UniformBufferWrite> uniform_buffer_writes{};
+		std::vector<BufferWrite> buffer_writes{};
 		std::vector<CombinedImageSamplerWrite> combined_image_sampler_writes{};
 	};
+
+
+	class BufferAddressGetter
+	{
+	public:
+		BufferAddressGetter(VkDevice d) : device(d)
+		{
+			vkGetBufferDeviceAddress = reinterpret_cast<PFN_vkGetBufferDeviceAddress>(vkGetDeviceProcAddr(device, "vkGetBufferDeviceAddress"));
+		}
+
+		inline VkDeviceAddress operator()(Buffer& buffer)
+		{
+			VkBufferDeviceAddressInfo info;
+			info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+			info.pNext = nullptr;
+			info.buffer = buffer;
+			VkDeviceAddress result = vkGetBufferDeviceAddress(device, &info);
+			buffer.device_address = result;
+			return result;
+		}
+	private:
+		VkDevice device{ VK_NULL_HANDLE };
+		PFN_vkGetBufferDeviceAddress vkGetBufferDeviceAddress{ nullptr };
+	};
+
+
+	VkFormat find_supported_format(VkPhysicalDevice physical_device, const std::vector<VkFormat>& candidates, VkImageTiling tiling, VkFormatFeatureFlags features) {
+		for (VkFormat format : candidates) {
+			VkFormatProperties props;
+			vkGetPhysicalDeviceFormatProperties(physical_device, format, &props);
+
+			if (tiling == VK_IMAGE_TILING_LINEAR && (props.linearTilingFeatures & features) == features) {
+				return format;
+			}
+			else if (tiling == VK_IMAGE_TILING_OPTIMAL && (props.optimalTilingFeatures & features) == features) {
+				return format;
+			}
+		}
+
+		return VK_FORMAT_UNDEFINED;
+	}
 };

@@ -1,7 +1,5 @@
 import time
 
-
-
 class FPSCounter:
 	"""
 	print_interval is the number of seconds between prints

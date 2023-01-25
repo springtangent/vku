@@ -5,82 +5,6 @@ import struct
 
 MAX_FRAMES_IN_FLIGHT = 2
 
-"""
-import glm
-import types
-
-
-
-
-VERTEX_ATTR_SIZES = {
-    vku.Format.R32G32B32_SFLOAT: 96
-}
-
-
-def create_vertex_array_class(*attributes):
-    def constructor(self, arr, index):
-        self.arr = arr
-        self.index = index
-
-    vertex_type = type("Vertex", (object, ), {
-        "__init__": constructor
-    })
-
-
-VertexArray = create_vertex_array_class(("position", vku.Format.R32G32B32_SFLOAT), ("color", vku.Format.R32G32B32_SFLOAT))
-
-vertex_array = VertexArray(100)
-
-
-class Vec3Attr:
-    def __set_name__(self, obj, name):
-        print("__set_name__", self, obj, name)
-
-    def __get__(self, obj, objtype=None):
-        return None
-
-    def __set__(self, obj, value):
-        pass
-
-
-class VertexFormat:
-    position = Vec3Attr()
-    color = Vec3Attr()
-
-
-
-
-
-class Vec2Attr:
-    def __get__(self, obj, objtype=None):
-        pass
-
-    def __set__(self, obj, value):
-        pass
-
-
-class FloatAttr:
-    def __get__(self, obj, objtype=None):
-        pass
-
-    def __set__(self, obj, value):
-        pass
-
-
-class Vertex:
-    POSITION_LOCATION = 0
-    COLOR_LOCATION = 1
-
-    @classmethod
-    def stride(cls):
-        return 12
-
-    @classmethod
-
-
-    @classmethod
-
-"""
 
 VERTEX_DATA = [
     (( 0.0, -0.5, 0.0), (1.0, 0.0, 0.0)),
@@ -91,8 +15,6 @@ VERTEX_DATA = [
 vec3 = struct.Struct("fff")
 
 VERTEX_BYTES = b''.join(vec3.pack(*position) + vec3.pack(*color) for position, color in VERTEX_DATA)
-
-print(VERTEX_BYTES)
 
 def get_binding_description(binding=0):
     result = vku.VertexInputBindingDescription()
@@ -153,13 +75,13 @@ class VulkanContext:
         self.device.wait_idle()
 
         self.destroy_sync_objects()
-        self.destroy_command_pool()
+        self.command_pool.destroy()
         self.destroy_framebuffers()
-        vku.destroy_swapchain(self.device, self.swapchain)
-        vku.destroy_renderpass(self.device, self.render_pass)
-        vku.destroy_device(self.device)
-        vku.destroy_surface(self.instance, self.surface)
-        vku.destroy_instance(self.instance)
+        self.swapchain.destroy()
+        self.render_pass.destroy()
+        self.device.destroy()
+        self.surface.destroy()
+        self.instance.destroy()
 
     def create_window(self):
         vku.window_hint(vku.CLIENT_API, vku.NO_API)
@@ -202,20 +124,19 @@ class VulkanContext:
 
     def create_swapchain(self):
         swapchain_builder = vku.SwapchainBuilder(self.device)
-        # swapchain_builder.set_old_swapchain(None)
-        self.swapchain = swapchain_builder.build()
+        swapchain_builder.set_old_swapchain(self.swapchain)
+        swapchain = swapchain_builder.build()
+        if self.swapchain:
+            self.swapchain.destroy()
+        self.swapchain = swapchain
 
     def recreate_swapchain(self):
         self.device.wait_idle()
 
-        self.destroy_command_pool()
+        self.command_pool.destroy()
         self.destroy_framebuffers()
 
-        swapchain_builder = vku.SwapchainBuilder(self.device)
-        swapchain_builder.set_old_swapchain(self.swapchain)
-        swapchain = swapchain_builder.build()
-        vku.destroy_swapchain(self.device, self.swapchain)
-        self.swapchain = swapchain
+        self.create_swapchain()
 
         self.create_framebuffers()
         self.create_command_pool()
@@ -225,7 +146,7 @@ class VulkanContext:
         # create render pass
         color_attachment = vku.AttachmentDescription()
         color_attachment.format = self.swapchain.image_format
-        color_attachment.samples = vku.SampleCount._1_BIT
+        color_attachment.samples = vku.SampleCount._1
         color_attachment.load_op = vku.AttachmentLoadOp.CLEAR
         color_attachment.store_op = vku.AttachmentStoreOp.STORE
         color_attachment.stencil_load_op = vku.AttachmentLoadOp.DONT_CARE
@@ -244,10 +165,10 @@ class VulkanContext:
         dependency = vku.SubpassDependency();
         dependency.src_subpass = vku.SUBPASS_EXTERNAL
         dependency.dst_subpass = 0
-        dependency.src_stage_mask = vku.PipelineStage.COLOR_ATTACHMENT_OUTPUT_BIT
+        dependency.src_stage_mask = vku.PipelineStage.COLOR_ATTACHMENT_OUTPUT
         dependency.src_access_mask = 0
-        dependency.dst_stage_mask = vku.PipelineStage.COLOR_ATTACHMENT_OUTPUT_BIT
-        dependency.dst_access_mask = vku.Access.COLOR_ATTACHMENT_READ_BIT | vku.Access.COLOR_ATTACHMENT_WRITE_BIT
+        dependency.dst_stage_mask = vku.PipelineStage.COLOR_ATTACHMENT_OUTPUT
+        dependency.dst_access_mask = vku.Access.COLOR_ATTACHMENT_READ | vku.Access.COLOR_ATTACHMENT_WRITE
 
         render_pass_info = vku.RenderPassCreateInfo()
         render_pass_info.attachments = [ color_attachment ]
@@ -275,14 +196,14 @@ class VulkanContext:
 
     def destroy_framebuffers(self):
         for fb in self.framebuffers:
-            vku.destroy_framebuffer(self.device, fb)
+            fb.destroy()
         self.framebuffers.clear()
         self.swapchain.destroy_image_views(self.swapchain_image_views)
         self.swapchain_image_views.clear()
 
     def create_sync_objects(self):
         # create sync objects
-        fence_info = vku.FenceCreateInfo(vku.FenceCreate.SIGNALED_BIT)
+        fence_info = vku.FenceCreateInfo(vku.FenceCreate.SIGNALED)
 
         self.available_semaphores = [vku.create_semaphore(self.device) for i in range(MAX_FRAMES_IN_FLIGHT)]
         self.finished_semaphores = [vku.create_semaphore(self.device) for i in range(MAX_FRAMES_IN_FLIGHT)]
@@ -290,27 +211,24 @@ class VulkanContext:
 
     def destroy_sync_objects(self):
         for s in self.available_semaphores:
-            vku.destroy_semaphore(self.device, s)
+            s.destroy()
 
         for s in self.finished_semaphores:
-            vku.destroy_semaphore(self.device, s)
+            s.destroy()
 
         for f in self.in_flight_fences:
-            vku.destroy_fence(self.device, f)
+            f.destroy()
 
     def create_command_pool(self):
         # create command pool
         pool_info = vku.CommandPoolCreateInfo()
-        pool_info.flags = vku.CommandPoolCreate.RESET_COMMAND_BUFFER_BIT
+        pool_info.flags = vku.CommandPoolCreate.RESET_COMMAND_BUFFER
 
         # TODO: error handling
         pool_info.queue_family_index = self.device.get_queue_index(vku.QueueType.graphics);
 
         # TODO: error handling
         self.command_pool = vku.create_command_pool(self.device, pool_info)
-
-    def destroy_command_pool(self):
-        vku.destroy_command_pool(self.device, self.command_pool) 
 
     def update_frame_data(self, frame_index):
         pass
@@ -326,7 +244,7 @@ class VulkanContext:
         render_pass_info.render_pass = self.render_pass
         render_pass_info.framebuffer = self.framebuffers[image_index]
         render_pass_info.render_area = vku.Rect2D(vku.Offset2D(0, 0), self.swapchain.extent)
-        render_pass_info.clear_values = [ vku.ClearValue.colorf(0.0, 0.0, 0.0, 1.0) ]
+        render_pass_info.clear_values = [ vku.ClearValue([0.0, 0.0, 0.0, 1.0]) ]
 
         viewport = vku.Viewport(0.0, 0.0,  self.swapchain.extent.width, self.swapchain.extent.height, 0.0, 1.0)
 
@@ -348,10 +266,11 @@ class VulkanContext:
 
     def allocate_command_buffers(self):
         # create command buffers
-        alloc_info = vku.CommandBufferAllocateInfo()
-        alloc_info.command_pool = self.command_pool
-        alloc_info.level = vku.CommandBufferLevel.PRIMARY
-        alloc_info.command_buffer_count = MAX_FRAMES_IN_FLIGHT
+        alloc_info = vku.CommandBufferAllocateInfo(
+            command_pool = self.command_pool,
+            level = vku.CommandBufferLevel.PRIMARY,
+            command_buffer_count = MAX_FRAMES_IN_FLIGHT
+        )
 
         # TODO: error handling
         self.command_buffers = vku.allocate_command_buffers(self.device, alloc_info)
@@ -380,7 +299,7 @@ class VulkanContext:
 
         submit_info = vku.SubmitInfo()
         submit_info.wait_semaphores = [ self.available_semaphores[self.current_frame] ]
-        submit_info.wait_dst_stage_masks = [ vku.PipelineStage.COLOR_ATTACHMENT_OUTPUT_BIT ]
+        submit_info.wait_dst_stage_masks = [ vku.PipelineStage.COLOR_ATTACHMENT_OUTPUT ]
         submit_info.command_buffers = [ self.command_buffers[self.current_frame] ]
         submit_info.signal_semaphores = [ self.finished_semaphores[self.current_frame] ]
 

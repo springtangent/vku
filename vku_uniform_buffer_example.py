@@ -7,8 +7,9 @@ import glm
 import time
 import fpscounter
 
-mat4_struct = struct.Struct("f" * 16)
-vec3_struct = struct.Struct("fff")
+mat4_struct = struct.Struct("16f")
+vec3_struct = struct.Struct("3f")
+
 
 @dataclass
 class UniformData:
@@ -176,7 +177,7 @@ class VulkanContext:
         # create render pass
         color_attachment = vku.AttachmentDescription()
         color_attachment.format = self.swapchain.image_format
-        color_attachment.samples = vku.SampleCount._1_BIT
+        color_attachment.samples = vku.SampleCount._1
         color_attachment.load_op = vku.AttachmentLoadOp.CLEAR
         color_attachment.store_op = vku.AttachmentStoreOp.STORE
         color_attachment.stencil_load_op = vku.AttachmentLoadOp.DONT_CARE

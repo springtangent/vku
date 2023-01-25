@@ -2,24 +2,43 @@ import sys
 sys.path.append("C:\\Users\\bafre\\vku\\build\\Debug")
 import pyvku as vku
 import struct
+import glm
+from dataclasses import dataclass, field
+import fpscounter
 
 MAX_FRAMES_IN_FLIGHT = 2
+
+@dataclass
+class UniformData:
+    model: glm.mat4 = field(default_factory=lambda: glm.mat4(1.0))
+    view: glm.mat4 = field(default_factory=lambda: glm.mat4(1.0))
+    proj: glm.mat4 = field(default_factory=lambda: glm.mat4(1.0))
+
+    def get_bytes(self):
+        return b''.join([self.model, self.view, self.proj])
+
 VERTICES = [
-    (( 0.0, -0.5, 0.0), (1.0, 0.0, 0.0)),
-    (( 0.5,  0.5, 0.0), (0.0, 1.0, 0.0)),
-    ((-0.5,  0.5, 0.0), (0.0, 0.0, 1.0))
+    (glm.vec3(-0.5, -0.5, 0.0), glm.vec3(1.0, 0.0, 0.0), glm.vec2(1.0, 0.0)),
+    (glm.vec3( 0.5, -0.5, 0.0), glm.vec3(0.0, 1.0, 0.0), glm.vec2(0.0, 0.0)),
+    (glm.vec3( 0.5,  0.5, 0.0), glm.vec3(0.0, 0.0, 1.0), glm.vec2(0.0, 1.0)),
+    (glm.vec3(-0.5,  0.5, 0.0), glm.vec3(1.0, 1.0, 1.0), glm.vec2(1.0, 1.0))
 ]
 
-vec3 = struct.Struct("fff")
+VERTEX_BYTES = b''.join(f for v in VERTICES for f in v)
 
-VERTEX_BYTES = b''.join(vec3.pack(*position) + vec3.pack(*color) for position, color in VERTICES)
+
+INDICES = [ 0, 1, 2, 0, 2, 3]
+indices_format = struct.Struct("H" * len(INDICES))
+INDEX_BYTES = indices_format.pack(*INDICES)
+
+UNIFORM_DATA_SIZE = len(UniformData().get_bytes())
 
 
 def get_binding_description(binding=0):
     result = vku.VertexInputBindingDescription()
 
     result.binding = binding
-    result.stride = vec3.size * 2
+    result.stride = 12 + 12 + 8
     result.input_rate = vku.VertexInputRate.VERTEX
 
     return result
@@ -28,6 +47,7 @@ def get_binding_description(binding=0):
 def get_attribute_descriptions(binding=0):
     POSITION_LOCATION = 0
     COLOR_LOCATION = 1
+    TEXCOORD_LOCATION = 2
 
     position_desc = vku.VertexInputAttributeDescription()
     position_desc.binding = binding
@@ -39,9 +59,15 @@ def get_attribute_descriptions(binding=0):
     color_desc.binding = binding
     color_desc.location = COLOR_LOCATION
     color_desc.format = vku.Format.R32G32B32_SFLOAT
-    color_desc.offset = vec3.size
+    color_desc.offset = 12
 
-    return [position_desc, color_desc]
+    texcoord_desc = vku.VertexInputAttributeDescription()
+    texcoord_desc.binding = binding
+    texcoord_desc.location = TEXCOORD_LOCATION
+    texcoord_desc.format = vku.Format.R32G32_SFLOAT
+    texcoord_desc.offset = 24
+
+    return [position_desc, color_desc, texcoord_desc]
 
 
 class Scene:
@@ -75,18 +101,22 @@ class VulkanContext:
         self.create_command_pool()
         self.allocate_command_buffers()
 
+    def wait_init(self):
+        pass
+
     def destroy(self):
         self.device.wait_idle()
 
         self.destroy_sync_objects()
-        self.destroy_command_pool()
+        self.command_pool.destroy()
         self.destroy_framebuffers()
 
-        vku.destroy_swapchain(self.device, self.swapchain)
-        vku.destroy_renderpass(self.device, self.render_pass)
-        vku.destroy_device(self.device)
-        vku.destroy_surface(self.instance, self.surface)
-        vku.destroy_instance(self.instance)
+        self.swapchain.destroy()
+        self.render_pass.destroy()
+
+        self.device.destroy()
+        self.surface.destroy()
+        self.instance.destroy()
 
     def create_window(self):
         vku.window_hint(vku.CLIENT_API, vku.NO_API)
@@ -113,19 +143,13 @@ class VulkanContext:
 
     def select_physical_device(self):
         physical_device_selector = vku.PhysicalDeviceSelector(self.instance)
+
+        required_features = vku.PhysicalDeviceFeatures()
+        required_features.sampler_anisotropy = True
+
+        physical_device_selector.set_required_features(required_features)
         physical_device_selector.set_surface(self.surface)
         physical_device_selector.prefer_gpu_device_type(vku.PreferredDeviceType.discrete)
-
-        # TODO: error handling.
-        physical_devices = physical_device_selector.select_devices()
-
-        for pd in physical_devices:
-            pdprops = vku.get_physical_device_properties(pd)
-            print(pdprops.api_version)
-            print(pdprops.device_name)
-            print(pdprops.vendor_id)
-            print(pdprops.device_type)
-
         self.physical_device = physical_device_selector.select()
 
     def create_device(self):
@@ -139,20 +163,19 @@ class VulkanContext:
 
     def create_swapchain(self):
         swapchain_builder = vku.SwapchainBuilder(self.device)
-        # swapchain_builder.set_old_swapchain(None)
-        self.swapchain = swapchain_builder.build()
+        swapchain_builder.set_old_swapchain(self.swapchain)
+        swapchain = swapchain_builder.build()
+        if self.swapchain:
+            self.swapchain.destroy()
+        self.swapchain = swapchain
 
     def recreate_swapchain(self):
         self.device.wait_idle()
 
-        self.destroy_command_pool()
+        self.command_pool.destroy()
         self.destroy_framebuffers()
 
-        swapchain_builder = vku.SwapchainBuilder(self.device)
-        swapchain_builder.set_old_swapchain(self.swapchain)
-        swapchain = swapchain_builder.build()
-        vku.destroy_swapchain(self.device, self.swapchain)
-        self.swapchain = swapchain
+        self.create_swapchain()
 
         self.create_framebuffers()
         self.create_command_pool()
@@ -212,7 +235,7 @@ class VulkanContext:
 
     def destroy_framebuffers(self):
         for fb in self.framebuffers:
-            vku.destroy_framebuffer(self.device, fb)
+            fb.destroy()
         self.framebuffers.clear()
         self.swapchain.destroy_image_views(self.swapchain_image_views)
         self.swapchain_image_views.clear()
@@ -227,13 +250,13 @@ class VulkanContext:
 
     def destroy_sync_objects(self):
         for s in self.available_semaphores:
-            vku.destroy_semaphore(self.device, s)
+            s.destroy()
 
         for s in self.finished_semaphores:
-            vku.destroy_semaphore(self.device, s)
+            s.destroy()
 
         for f in self.in_flight_fences:
-            vku.destroy_fence(self.device, f)
+            f.destroy()
 
     def create_command_pool(self):
         # create command pool
@@ -245,9 +268,6 @@ class VulkanContext:
 
         # TODO: error handling
         self.command_pool = vku.create_command_pool(self.device, pool_info)
-
-    def destroy_command_pool(self):
-        vku.destroy_command_pool(self.device, self.command_pool) 
 
     def update_frame_data(self, frame_index):
         pass
@@ -309,23 +329,6 @@ class VulkanContext:
 
         return self.current_frame
 
-    def draw_frame(self):
-        try:
-            self.begin_draw_frame()
-        except vku.SwapchainOutOfDateError as sc_error:
-            self.recreate_swapchain()
-            return
-
-        # TODO: this needs to be done outside of this class,
-        #       in a callback or something.
-        self.update_frame_data(self.current_frame)
-
-        # TODO: this needs to be done outside of this class,
-        #       in a callback or something.
-        self.record_command_buffer()
-
-        self.end_draw_frame()
-
     def end_draw_frame(self):
         submit_info = vku.SubmitInfo()
         submit_info.wait_semaphores = [ self.available_semaphores[self.current_frame] ]
@@ -353,56 +356,215 @@ class SharedContext:
     def __init__(self, vulkan_context):
         super().__init__()
         self.vulkan_context = vulkan_context
+        self.fps_counter = fpscounter.FPSCounter()
+
+    def transition_image_layout(self, command_buffer, image, new_layout, dst_stage, dst_access_mask):
+        # transition the image layout so we can transfer to it.
+        barrier = vku.ImageMemoryBarrier(
+            src_access_mask = image.src_access_mask,
+            dst_access_mask = dst_access_mask,
+            old_layout = self.texture_image.layout,
+            new_layout = new_layout,
+            image = self.texture_image,
+            subresource_range = vku.ImageSubresourceRange(
+                aspect_mask = vku.ImageAspect.COLOR,
+                level_count = 1,
+                layer_count = 1
+            )
+        )
+
+        vku.cmd_pipeline_barrier(
+            command_buffer,
+            dependency_flags = 0,
+            src_stage_mask = self.texture_image.source_stage, # defaults to TOP_OF_PIPE
+            dst_stage_mask = dst_stage,
+            image_memory_barriers = [ barrier ]
+        )
+
+        self.texture_image.layout = new_layout
+        self.texture_image.source_stage = dst_stage
+        self.texture_image.src_access_mask = dst_access_mask
+
 
     def init(self):
+        buffer_factory = vku.BufferFactory(self.vulkan_context.device, self.vulkan_context.physical_device)
+
+        vertices_size = len(VERTEX_BYTES)
+        indices_size = len(INDEX_BYTES)
+        staging_buffer = buffer_factory.build(vertices_size + indices_size, vku.BufferUsage.TRANSFER_SRC, vku.MemoryProperty.HOST_VISIBLE | vku.MemoryProperty.HOST_COHERENT)
+        staging_buffer.map_memory()
+        mem = staging_buffer.get_mapped()
+        mem[0:vertices_size] = VERTEX_BYTES
+        mem[vertices_size:] = INDEX_BYTES
+
+        staging_buffer.unmap_memory()
+
+        self.vertex_buffer = buffer_factory.build(
+            vertices_size,
+            vku.BufferUsage.VERTEX_BUFFER | vku.BufferUsage.TRANSFER_DST,
+            vku.MemoryProperty.DEVICE_LOCAL)
+
+        self.index_buffer = buffer_factory.build(
+            vertices_size,
+            vku.BufferUsage.INDEX_BUFFER | vku.BufferUsage.TRANSFER_DST,
+            vku.MemoryProperty.DEVICE_LOCAL)
+
+
+        # load the image, so we know how large it is
+        image_data = vku.load_image("resources/textures/texture.jpg", vku.RGB_ALPHA)
+
+        # create the image
+        self.image_factory = vku.ImageFactory(self.vulkan_context.physical_device, self.vulkan_context.device)
+
+        self.texture_image = self.image_factory.build_image_2d(
+            image_data.extent,
+            vku.Format.R8G8B8A8_SRGB,
+            vku.ImageUsage.TRANSFER_DST | vku.ImageUsage.SAMPLED,
+            vku.MemoryProperty.DEVICE_LOCAL)
+
+        # create the staging buffer for the image data, and copy it over
+        image_staging_buffer = buffer_factory.build(
+            image_data.size,
+            vku.BufferUsage.TRANSFER_SRC,
+            vku.MemoryProperty.HOST_VISIBLE | vku.MemoryProperty.HOST_COHERENT
+        )
+
+        image_staging_buffer.map_memory()
+        image_memory_view = image_staging_buffer.get_mapped()
+
+        image_memory_view[:] = image_data.get_data()
+        image_staging_buffer.unmap_memory()
+
+        self.executor = executor = vku.SingleTimeCommandExecutor(self.vulkan_context.device, self.vulkan_context.command_pool, self.vulkan_context.graphics_queue)
+
+        # TODO: figure out an interface to stop on an error.
+        with executor as command_buffer:
+            # copy the vertex buffer
+            copy_region = vku.BufferCopy(
+                size = vertices_size
+            )
+            vku.cmd_copy_buffer(command_buffer, staging_buffer, self.vertex_buffer, [copy_region])
+
+            # copy the indices to the index buffer
+            copy_region = vku.BufferCopy(
+                src_offset = vertices_size,
+                size = indices_size
+            )
+            vku.cmd_copy_buffer(command_buffer, staging_buffer, self.index_buffer, [copy_region])
+
+            self.transition_image_layout(
+                command_buffer,
+                self.texture_image,
+                vku.ImageLayout.TRANSFER_DST_OPTIMAL,
+                vku.PipelineStage.TRANSFER,
+                vku.Access.TRANSFER_WRITE
+            )
+
+
+            # copy the image data from the staging buffer to the image.
+            region = vku.BufferImageCopy(
+                image_subresource = vku.ImageSubresourceLayers(
+                    aspect_mask = vku.ImageAspect.COLOR,
+                    layer_count = 1
+                ),
+                image_extent = vku.Extent3D(image_data.width, image_data.height, 1)
+            )
+
+            vku.cmd_copy_buffer_to_image(
+                command_buffer,
+                image_staging_buffer,
+                self.texture_image,
+                self.texture_image.layout,
+                [region]
+            )
+
+            self.transition_image_layout(
+                command_buffer,
+                self.texture_image,
+                vku.ImageLayout.SHADER_READ_ONLY_OPTIMAL,
+                vku.PipelineStage.FRAGMENT_SHADER,
+                vku.Access.SHADER_READ
+            )
+
+
+        # save this so we can delete it after the transfer is complete
+        self.transfer_staging_buffers = [ staging_buffer, image_staging_buffer ]
+
+        self.create_descriptor_set_layout()
+        self.create_pipeline_layout()
+        self.create_graphics_pipelines()
+        self.create_image_view()
+        self.create_sampler()
+
+    def create_image_view(self):
+        factory = vku.ImageViewFactory(self.vulkan_context.device)
+        self.texture_image_view = factory.build2D(self.texture_image, vku.Format.R8G8B8A8_SRGB)
+
+    def create_sampler(self):
+        factory = vku.SamplerFactory(self.vulkan_context.device, self.vulkan_context.physical_device)
+        self.texture_sampler = factory.build()
+
+    def create_descriptor_set_layout(self):
+        builder = vku.DescriptorSetLayoutBuilder(self.vulkan_context.device)
+        builder.add_binding(0, vku.DescriptorType.UNIFORM_BUFFER, 1, vku.ShaderStage.VERTEX)
+        builder.add_binding(1, vku.DescriptorType.COMBINED_IMAGE_SAMPLER, 1, vku.ShaderStage.FRAGMENT)
+        self.descriptor_set_layout = builder.build()
+
+    def create_pipeline_layout(self):
         pipeline_layout_builder = vku.PipelineLayoutBuilder(self.vulkan_context.device)
+        pipeline_layout_builder.add_descriptor_set(self.descriptor_set_layout)
         self.pipeline_layout = pipeline_layout_builder.build()
 
-        factory = vku.BufferFactory(self.vulkan_context.device, self.vulkan_context.physical_device)
-        self.vertex_buffer = factory.build(len(VERTEX_BYTES), vku.BufferUsage.VERTEX_BUFFER, vku.MemoryProperty.HOST_VISIBLE | vku.MemoryProperty.HOST_COHERENT)
-        self.vertex_buffer.map_memory()
-        mem = self.vertex_buffer.get_mapped()
-        mem[:] = VERTEX_BYTES
-        self.vertex_buffer.unmap_memory()
-        self.create_graphics_pipelines()
+    def wait_init(self):
+        self.executor.wait()
+        self.executor.destroy()
+        for b in self.transfer_staging_buffers:
+            b.destroy()
 
     def destroy(self):
+        self.texture_image_view.destroy()
+        self.texture_image.destroy()
+        self.texture_sampler.destroy()
         self.vertex_buffer.destroy()
-        self.pipeline_layout.destroy()
+        self.index_buffer.destroy()
+        self.texture_image.destroy()
         self.graphics_pipeline.destroy()
+        self.descriptor_set_layout.destroy()
+        self.pipeline_layout.destroy()
 
     def create_graphics_pipelines(self):
         pipeline_builder = vku.GraphicsPipelineBuilder(self.vulkan_context.device)
 
-        with open("resources/shaders/triangle_buffer.vert.spv", "rb") as vert_file:
+        with open("resources/shaders/texture_example.vert.spv", "rb") as vert_file:
             vert_bytes = vert_file.read()
 
-        with open("resources/shaders/triangle_buffer.frag.spv", "rb") as frag_file:
+        with open("resources/shaders/texture_example.frag.spv", "rb") as frag_file:
             frag_bytes = frag_file.read()
-
-        print(len(vert_bytes))
-        print(len(frag_bytes))
 
         vert_module = vku.create_shader_module(self.vulkan_context.device, vert_bytes)
         frag_module = vku.create_shader_module(self.vulkan_context.device, frag_bytes)
 
         colorBlendAttachment = vku.PipelineColorBlendAttachmentState()
-        colorBlendAttachment.color_write_mask = vku.ColorComponent.R | vku.ColorComponent.G | vku.ColorComponent.B | vku.ColorComponent.A;
+        colorBlendAttachment.color_write_mask = vku.ColorComponent.R | vku.ColorComponent.G | vku.ColorComponent.B | vku.ColorComponent.A
         colorBlendAttachment.blend_enable = False
 
         swapchain = self.vulkan_context.swapchain
 
-        pipeline_builder.add_shader_stage(vku.ShaderStage.VERTEX, vert_module)
-        pipeline_builder.add_shader_stage(vku.ShaderStage.FRAGMENT, frag_module)
-        pipeline_builder.add_viewport(vku.Viewport(0.0, 0.0, swapchain.extent.width, swapchain.extent.height, 0.0, 1.0))
-        pipeline_builder.add_scissor(vku.Rect2D(vku.Offset2D(0, 0), vku.Extent2D(swapchain.extent.width, swapchain.extent.height)))
-        pipeline_builder.add_dynamic_state(vku.DynamicState.VIEWPORT)
-        pipeline_builder.add_dynamic_state(vku.DynamicState.SCISSOR)
-        pipeline_builder.set_pipeline_layout(self.pipeline_layout)
-        pipeline_builder.set_render_pass(self.vulkan_context.render_pass)
-        pipeline_builder.add_color_blend_attachment(colorBlendAttachment)
-        pipeline_builder.add_vertex_binding(get_binding_description())
-        pipeline_builder.add_vertex_attributes(get_attribute_descriptions())
+        pipeline_builder.add_shader_stage(vku.ShaderStage.VERTEX, vert_module)\
+            .add_shader_stage(vku.ShaderStage.FRAGMENT, frag_module)\
+            .add_viewport(vku.Viewport(0.0, 0.0, swapchain.extent.width, swapchain.extent.height, 0.0, 1.0))\
+            .add_scissor(vku.Rect2D(vku.Offset2D(0, 0), vku.Extent2D(swapchain.extent.width, swapchain.extent.height)))\
+            .set_viewport_count(1)\
+            .set_scissor_count(1)\
+            .add_dynamic_state(vku.DynamicState.VIEWPORT)\
+            .add_dynamic_state(vku.DynamicState.SCISSOR)\
+            .set_pipeline_layout(self.pipeline_layout)\
+            .set_render_pass(self.vulkan_context.render_pass)\
+            .add_color_blend_attachment(colorBlendAttachment)\
+            .add_vertex_binding(get_binding_description())\
+            .add_vertex_attributes(get_attribute_descriptions())\
+            .set_cull_mode(vku.CullMode.BACK)\
+            .set_front_face(vku.FrontFace.COUNTERCLOCKWISE)
 
         self.graphics_pipeline = pipeline_builder.build()
 
@@ -417,15 +579,64 @@ class FrameContext:
         self.shared_context = shared_context
 
     def init(self):
-        pass
+        self.create_buffers()
+        self.create_descriptor_pool()
+        self.create_descriptor_set()
 
     def destroy(self):
+        self.uniform_buffer.destroy()
+        self.descriptor_pool.destroy()
+
+    def create_buffers(self):
+        factory = vku.BufferFactory(self.vulkan_context.device, self.vulkan_context.physical_device)
+        self.uniform_buffer = factory.build(
+            UNIFORM_DATA_SIZE,
+            vku.BufferUsage.UNIFORM_BUFFER,
+            vku.MemoryProperty.HOST_VISIBLE | vku.MemoryProperty.HOST_COHERENT
+        )
+        # keep the uniform buffer mapped.
+        self.uniform_buffer.map_memory() 
+
+    def create_descriptor_pool(self):
+        builder = vku.DescriptorPoolBuilder(self.vulkan_context.device)
+        builder.add_descriptor_sets(self.shared_context.descriptor_set_layout)
+        self.descriptor_pool = builder.build()
+
+    def create_descriptor_set(self):
+        builder = vku.DescriptorSetBuilder(self.vulkan_context.device, self.descriptor_pool, self.shared_context.descriptor_set_layout)
+        builder.write_uniform_buffer(0, 0, self.uniform_buffer, 0, self.uniform_buffer.get_size())
+        builder.write_combined_image_sampler(1, 0, self.shared_context.texture_image, self.shared_context.texture_image_view, self.shared_context.texture_sampler)
+        self.descriptor_set = builder.build()
+
+    def wait_init(self):
         pass
 
-    def record_command_buffer(self, command_buffer):
-        pass
+    def update(self):
+        swapchain_extent = self.vulkan_context.swapchain.extent
+        
+        t = self.shared_context.fps_counter.tick()
 
- 
+        model = glm.rotate(glm.mat4(1.0), t * glm.radians(90.0), glm.vec3(0.0,0.0,1.0))
+        view = glm.lookAt(glm.vec3(2.0, 2.0, 2.0), glm.vec3(0.0, 0.0, 0.0), glm.vec3(0.0, 0.0, 1.0))
+        proj = glm.perspective(glm.radians(45.0), float(swapchain_extent.width)/float(swapchain_extent.height), 0.1, 10.0)
+        proj[1][1] *= -1.0
+
+        ubo = UniformData(model, view, proj)
+
+        uniform_buffer_view = self.uniform_buffer.get_mapped()
+        uniform_buffer_view[:] = ubo.get_bytes()
+
+    def record_command_buffer(self, command_buffer, scene, current_frame):
+        vku.cmd_bind_pipeline(command_buffer, vku.PipelineBindPoint.GRAPHICS, self.shared_context.graphics_pipeline)
+
+        vertex_buffers  = [ self.shared_context.vertex_buffer ]
+        offsets = [ 0 ]
+        vku.cmd_bind_vertex_buffers(command_buffer, 0, vertex_buffers, offsets)
+        vku.cmd_bind_index_buffer(command_buffer, self.shared_context.index_buffer, 0, vku.IndexType.UINT16)
+        vku.cmd_bind_descriptor_sets(command_buffer, vku.PipelineBindPoint.GRAPHICS, self.shared_context.graphics_pipeline.get_layout(), 0, [ self.descriptor_set ])
+        vku.cmd_draw_indexed(command_buffer, len(INDICES), 1, 0, 0, 0)
+
+        return True
 
 
 class GraphicsContext:
@@ -441,6 +652,12 @@ class GraphicsContext:
         for fc in self.frame_contexts:
             fc.init()
 
+    def wait_init(self):
+        self.vulkan_context.wait_init()
+        self.shared_context.wait_init()
+        for fc in self.frame_contexts:
+            fc.wait_init()
+
     def destroy(self):
         self.vulkan_context.device.wait_idle()
 
@@ -452,12 +669,15 @@ class GraphicsContext:
 
     def record_command_buffer(self, command_buffer, scene):
         vku.cmd_bind_pipeline(command_buffer, vku.PipelineBindPoint.GRAPHICS, self.shared_context.graphics_pipeline)
-        assert(self.shared_context.vertex_buffer.is_valid())
-        vertex_buffers = [ self.shared_context.vertex_buffer ]
+
+        vertex_buffers  = [ self.shared_context.vertex_buffer ]
         offsets = [ 0 ]
         vku.cmd_bind_vertex_buffers(command_buffer, 0, vertex_buffers, offsets)
+        vku.cmd_bind_index_buffer(command_buffer, self.shared_context.index_buffer, 0, vku.IndexType.UINT16)
+        vku.cmd_bind_descriptor_sets(command_buffer, vku.PipelineBindPoint.GRAPHICS, self.shared_context.graphics_pipeline.get_layout(), 0, [ self.descriptor_set ])
+        vku.cmd_draw_indexed(command_buffer, len(INDICES), 1, 0, 0, 0)
 
-        vku.cmd_draw(command_buffer, len(VERTICES), 1, 0, 0)
+        return True
 
     def draw_frame(self, scene):
         try:
@@ -466,13 +686,14 @@ class GraphicsContext:
             self.vulkan_context.recreate_swapchain()
             return
 
-        command_buffer = self.vulkan_context.begin_record_command_buffer()
-
         frame_context = self.frame_contexts[current_frame]
+        frame_context.update()
+
+        command_buffer = self.vulkan_context.begin_record_command_buffer()
 
         self.vulkan_context.begin_render_pass()
 
-        self.record_command_buffer(command_buffer, scene)
+        frame_context.record_command_buffer(command_buffer, scene, current_frame)
 
         self.vulkan_context.end_render_pass()
 
@@ -500,7 +721,9 @@ class Application:
     def main(self):
         print("supported extensions:", vku.get_supported_extensions())
         print("vulkan version:", vku.get_vulkan_version())
+
         self.graphics_context.init()
+        self.graphics_context.wait_init()
         pdprops = vku.get_physical_device_properties(self.graphics_context.vulkan_context.physical_device)
         print(pdprops.api_version)
         print(pdprops.device_name)
