@@ -17,3 +17,6 @@
 [submodule "extern/fmt"]
 	path = extern/fmt
 	url = ../../fmtlib/fmt.git
+[submodule "extern/imgui"]
+	path = extern/imgui
+	url = ../../ocornut/imgui.git

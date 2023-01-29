@@ -1326,7 +1326,6 @@ namespace vku
 			depthStencil.depthBoundsTestEnable = VK_FALSE;
 			depthStencil.stencilTestEnable = VK_FALSE;
 
-
 			VkPipelineColorBlendStateCreateInfo color_blending = {};
 			color_blending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
 			color_blending.logicOpEnable = VK_FALSE;

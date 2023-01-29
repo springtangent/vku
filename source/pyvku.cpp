@@ -4,6 +4,11 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
+#include "imgui.h"
+#include "backends/imgui_impl_glfw.h"
+#include "backends/imgui_impl_vulkan.h"
+
+
 #include <VkBootstrap.h>
 #include <vku.h>
 
@@ -13,10 +18,10 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
+// TODO: do we need this?
 #include <glm/gtx/projection.hpp>
 
 namespace py = pybind11;
-
 
 class ImageData
 {
@@ -266,7 +271,7 @@ public:
         glfwSetMouseButtonCallback(window, mouse_button_callback);
         glfwSetCursorPosCallback(window, cursor_pos_callback);
         glfwSetCursorEnterCallback(window, cursor_enter_callback);
-        glfwSetScrollCallback(window, scroll_callback);
+glfwSetScrollCallback(window, scroll_callback);
 
     }
 
@@ -275,7 +280,7 @@ public:
         glfwMakeContextCurrent(window);
     }
 
-    vku::Surface create_surface(vku::Instance &instance)
+    vku::Surface create_surface(vku::Instance& instance)
     {
         VkSurfaceKHR result{ VK_NULL_HANDLE };
 
@@ -314,6 +319,148 @@ public:
     GLFWwindow* window{ nullptr };
     std::vector<InputEvent> input_events{};
 };
+
+
+
+struct Imgui
+{
+    VkInstance instance{ VK_NULL_HANDLE };
+    VkPhysicalDevice physical_device{ VK_NULL_HANDLE };
+    VkDevice device{ VK_NULL_HANDLE };
+    VkQueue queue{ VK_NULL_HANDLE };
+    uint32_t queue_family{ 0 };
+    std::shared_ptr<Window> window;
+
+    VkDescriptorPool descriptor_pool{ VK_NULL_HANDLE };
+    uint32_t min_image_count{ 3 };
+    uint32_t image_count{ 3 };
+    VkSampleCountFlagBits samples{ VK_SAMPLE_COUNT_1_BIT };
+    bool show_demo_window = true;
+
+    vku::SingleTimeCommandExecutor init_executor{};
+    VkCommandPool command_pool{ VK_NULL_HANDLE };
+    //  ImGui_ImplVulkanH_Window main_window_data;
+
+    Imgui(std::shared_ptr<Window> _window, vku::Instance _instance, PhysicalDevice _physical_device, vku::Device _device, vku::Queue _queue, uint32_t _queue_family, vku::CommandPool _command_pool, VkSampleCountFlagBits _samples) :
+        window(_window), instance(_instance), physical_device(_physical_device), device(_device), queue(_queue), command_pool(_command_pool), samples(_samples)
+    {
+    }
+
+    bool init(vku::RenderPass _render_pass)
+    {
+        py::print("Imgui::init creating descriptor pool.");
+        VkDescriptorPoolSize pool_sizes[] =
+        {
+            { VK_DESCRIPTOR_TYPE_SAMPLER, 1000 },
+            { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000 },
+            { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1000 },
+            { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1000 },
+            { VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1000 },
+            { VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 1000 },
+            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1000 },
+            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1000 },
+            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1000 },
+            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1000 },
+            { VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1000 }
+        };
+
+        VkDescriptorPoolCreateInfo pool_info = {};
+        pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+        pool_info.maxSets = 1000;
+        pool_info.poolSizeCount = std::size(pool_sizes);
+        pool_info.pPoolSizes = pool_sizes;
+
+        if (VK_SUCCESS != vkCreateDescriptorPool(device, &pool_info, nullptr, &descriptor_pool))
+        {
+            return false;
+        }
+
+        py::print("Imgui::init creating context.");
+        ImGui::CreateContext();
+
+        py::print("Imgui::init initializing vulkan.");
+        // window_data.
+        ImGui_ImplVulkan_InitInfo init_info = {};
+        init_info.Instance = instance;
+        init_info.PhysicalDevice = physical_device;
+        init_info.Device = device;
+        init_info.QueueFamily = queue_family;
+        init_info.Queue = queue;
+        init_info.DescriptorPool = descriptor_pool;
+        init_info.MinImageCount = min_image_count;
+        init_info.ImageCount = image_count;
+        init_info.MSAASamples = samples;
+
+        ImGui_ImplVulkan_Init(&init_info, _render_pass);
+        bool install_callbacks = true;
+        if (!ImGui_ImplGlfw_InitForVulkan(window->window, install_callbacks))
+        {
+            return false;
+        }
+
+        py::print("Imgui::init creating init queue.");
+        init_executor.init(device, command_pool, queue);
+        auto executor_result = init_executor.enter();
+
+        if (!executor_result)
+        {
+            // TODO: throw an error nd stuff.
+            return false;
+        }
+
+        py::print("Imgui::init populating init pool.");
+        auto command_buffer = executor_result.get_value();
+
+        ImGui_ImplVulkan_CreateFontsTexture(command_buffer);
+
+        // this submits the queue and starts it executing.
+        py::print("Imgui::init finalizing init pool.");
+        init_executor.exit();
+
+        return true;
+    }
+
+    void set_image_count(uint32_t image_count)
+    {
+        ImGui_ImplVulkan_SetMinImageCount(image_count);
+    }
+
+    void wait_init()
+    {
+        // wait on the fence, destroy the fence and the command queue once it's done executing.
+        init_executor.wait();
+        init_executor.destroy();
+        ImGui_ImplVulkan_DestroyFontUploadObjects();
+    }
+
+    void new_frame()
+    {
+        ImGui_ImplVulkan_NewFrame();
+        ImGui_ImplGlfw_NewFrame();
+        ImGui::NewFrame();
+
+        // 1. Show the big demo window (Most of the sample code is in ImGui::ShowDemoWindow()! You can browse its code to learn more about Dear ImGui!).
+        if (show_demo_window)
+            ImGui::ShowDemoWindow(&show_demo_window);
+    }
+
+    void render(vku::CommandBuffer command_buffer)
+    {
+        ImGui::Render();
+        ImDrawData* draw_data = ImGui::GetDrawData();
+        ImGui_ImplVulkan_RenderDrawData(draw_data, command_buffer);
+    }
+
+    void destroy()
+    {
+        vkDestroyDescriptorPool(device, descriptor_pool, nullptr);
+        ImGui_ImplVulkan_Shutdown();
+        ImGui_ImplGlfw_Shutdown();
+        ImGui::DestroyContext();
+    }
+};
+
 
 
 inline void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods)
@@ -1442,29 +1589,6 @@ void cmd_bind_descriptor_sets(const vku::CommandBuffer &command_buffer, VkPipeli
     vkCmdBindDescriptorSets(command_buffer, bind_point, layout, first_binding, ds.size(), ds.data(), 0, nullptr);
 }
 
-/*
-class ImageFactory
-{
-public:
-    ImageFactory(const PhysicalDevice& physical_device, const vku::Device& device) : image_factory((VkPhysicalDevice)physical_device, (VkDevice)device) { }
-
-    vku::Image build_image_2d(VkExtent2D extent, VkFormat format, VkImageUsageFlags usage, VkMemoryPropertyFlags properties)
-    {
-        auto res = image_factory.build_image_2d(extent, format, usage, properties);
-
-        // TODO: error handling.
-        if (!res)
-        {
-            throw std::runtime_error(res.get_error().message());
-        }
-
-        return res.get_value();
-    }
-private:
-    vku::ImageFactory image_factory;
-};
-*/
-
 void cmd_pipeline_barrier(
     const vku::CommandBuffer &command_buffer,
     VkPipelineStageFlags src_stage_mask,
@@ -1694,19 +1818,10 @@ inline void bind_glfw_key_tokens(py::module m)
     m.attr("KEY_MENU") = py::int_(GLFW_KEY_MENU);
     m.attr("KEY_LAST") = py::int_(GLFW_KEY_LAST);
 
-}
-
-PYBIND11_MODULE(pyvku, m) {
-    m.doc() = "vku test"; // optional module docstring
-
     m.attr("CLIENT_API") = py::int_(GLFW_CLIENT_API);
     m.attr("NO_API") = py::int_(GLFW_NO_API);
     m.attr("SUBPASS_EXTERNAL") = py::int_(VK_SUBPASS_EXTERNAL);
     m.attr("UINT64_MAX") = py::int_(UINT64_MAX);
-    m.attr("GREY") = py::int_((int)STBI_grey);
-    m.attr("GREY_ALPHA") = py::int_((int)STBI_grey_alpha);
-    m.attr("RGB") = py::int_((int)STBI_rgb);
-    m.attr("RGB_ALPHA") = py::int_((int)STBI_rgb_alpha);
 
     m.attr("INPUT_MODE_CURSOR") = py::int_((int)GLFW_CURSOR);
     m.attr("INPUT_MODE_STICKY_KEYS") = py::int_((int)GLFW_STICKY_KEYS);
@@ -1717,6 +1832,15 @@ PYBIND11_MODULE(pyvku, m) {
     m.attr("ACTION_PRESS") = py::int_((int)GLFW_PRESS);
     m.attr("ACTION_REPEAT") = py::int_((int)GLFW_REPEAT);
     m.attr("ACTION_RELEASE") = py::int_((int)GLFW_RELEASE);
+}
+
+PYBIND11_MODULE(pyvku, m) {
+    m.doc() = "vku test"; // optional module docstring
+
+    m.attr("GREY") = py::int_((int)STBI_grey);
+    m.attr("GREY_ALPHA") = py::int_((int)STBI_grey_alpha);
+    m.attr("RGB") = py::int_((int)STBI_rgb);
+    m.attr("RGB_ALPHA") = py::int_((int)STBI_rgb_alpha);
    
     bind_vk_aabb_positions_khr(m);
     bind_glfw_key_tokens(m);
@@ -1915,33 +2039,6 @@ PYBIND11_MODULE(pyvku, m) {
         .def_readwrite("image_offset", &VkBufferImageCopy::imageOffset)
         .def_readwrite("image_extent", &VkBufferImageCopy::imageExtent);
 
-    pybind11::class_<VkAttachmentDescription>(m, "AttachmentDescription")
-        .def(pybind11::init<uint32_t, VkFormat, VkSampleCountFlagBits, VkAttachmentLoadOp, VkAttachmentStoreOp, VkAttachmentLoadOp, VkAttachmentStoreOp, VkImageLayout, VkImageLayout>(),
-            pybind11::arg("flags") = 0,
-            pybind11::arg("format") = VK_FORMAT_UNDEFINED,
-            pybind11::arg("samples") = VK_SAMPLE_COUNT_1_BIT,
-            pybind11::arg("load_op") = VK_ATTACHMENT_LOAD_OP_LOAD,
-            pybind11::arg("store_op") = VK_ATTACHMENT_STORE_OP_STORE,
-            pybind11::arg("stencil_load_op") = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-            pybind11::arg("stencil_store_op") = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-            pybind11::arg("initial_layout") = VK_IMAGE_LAYOUT_UNDEFINED,
-            pybind11::arg("final_layout") = VK_IMAGE_LAYOUT_UNDEFINED)
-        .def_readwrite("flags", &VkAttachmentDescription::flags)
-        .def_readwrite("format", &VkAttachmentDescription::format)
-        .def_readwrite("samples", &VkAttachmentDescription::samples)
-        .def_readwrite("load_op", &VkAttachmentDescription::loadOp)
-        .def_readwrite("store_op", &VkAttachmentDescription::storeOp)
-        .def_readwrite("stencil_load_op", &VkAttachmentDescription::stencilLoadOp)
-        .def_readwrite("stencil_store_op", &VkAttachmentDescription::stencilStoreOp)
-        .def_readwrite("initial_layout", &VkAttachmentDescription::initialLayout)
-        .def_readwrite("final_layout", &VkAttachmentDescription::finalLayout);
- 
-
-    py::class_<VkAttachmentReference>(m, "AttachmentReference")
-        .def(py::init<>())
-        .def_readwrite("attachment", &VkAttachmentReference::attachment)
-        .def_readwrite("layout", &VkAttachmentReference::layout);
-
     py::enum_<VkFormat>(m, "Format")
         .value("UNDEFINED", VK_FORMAT_UNDEFINED)
         .value("R4G4_UNORM_PACK8", VK_FORMAT_R4G4_UNORM_PACK8)
@@ -1978,6 +2075,57 @@ PYBIND11_MODULE(pyvku, m) {
         .value("D32_SFLOAT", VK_FORMAT_D32_SFLOAT)
         .value("D32_SFLOAT_S8_UINT", VK_FORMAT_D32_SFLOAT_S8_UINT)
         .value("D24_UNORM_S8_UINT", VK_FORMAT_D24_UNORM_S8_UINT);
+
+    py::enum_<VkSampleCountFlagBits>(m, "SampleCount", py::arithmetic())
+        .value("_1", VK_SAMPLE_COUNT_1_BIT);
+
+    py::enum_<VkAttachmentLoadOp>(m, "AttachmentLoadOp")
+        .value("DONT_CARE", VK_ATTACHMENT_LOAD_OP_DONT_CARE)
+        .value("CLEAR", VK_ATTACHMENT_LOAD_OP_CLEAR)
+        .value("LOAD", VK_ATTACHMENT_LOAD_OP_LOAD);
+
+    py::enum_<VkAttachmentStoreOp>(m, "AttachmentStoreOp")
+        .value("DONT_CARE", VK_ATTACHMENT_STORE_OP_DONT_CARE)
+        .value("STORE", VK_ATTACHMENT_STORE_OP_STORE);
+
+    py::enum_<VkImageLayout>(m, "ImageLayout")
+        .value("UNDEFINED", VK_IMAGE_LAYOUT_UNDEFINED)
+        .value("GENERAL", VK_IMAGE_LAYOUT_GENERAL)
+        .value("COLOR_ATTACHMENT_OPTIMAL", VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
+        .value("DEPTH_STENCIL_ATTACHMENT_OPTIMAL", VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+        .value("DEPTH_STENCIL_READ_ONLY_OPTIMAL", VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL)
+        .value("SHADER_READ_ONLY_OPTIMAL", VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+        .value("TRANSFER_SRC_OPTIMAL", VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
+        .value("TRANSFER_DST_OPTIMAL", VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+        .value("PREINITIALIZED", VK_IMAGE_LAYOUT_PREINITIALIZED)
+        .value("PRESENT_SRC_KHR", VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+
+    py::class_<VkAttachmentDescription>(m, "AttachmentDescription")
+        .def(py::init<uint32_t, VkFormat, VkSampleCountFlagBits, VkAttachmentLoadOp, VkAttachmentStoreOp, VkAttachmentLoadOp, VkAttachmentStoreOp, VkImageLayout, VkImageLayout>(),
+            py::arg("flags") = 0,
+            py::arg("format") = VK_FORMAT_UNDEFINED,
+            py::arg("samples") = VK_SAMPLE_COUNT_1_BIT,
+            py::arg("load_op") = VK_ATTACHMENT_LOAD_OP_LOAD,
+            py::arg("store_op") = VK_ATTACHMENT_STORE_OP_STORE,
+            py::arg("stencil_load_op") = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            py::arg("stencil_store_op") = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            py::arg("initial_layout") = VK_IMAGE_LAYOUT_UNDEFINED,
+            py::arg("final_layout") = VK_IMAGE_LAYOUT_UNDEFINED)
+        .def_readwrite("flags", &VkAttachmentDescription::flags)
+        .def_readwrite("format", &VkAttachmentDescription::format)
+        .def_readwrite("samples", &VkAttachmentDescription::samples)
+        .def_readwrite("load_op", &VkAttachmentDescription::loadOp)
+        .def_readwrite("store_op", &VkAttachmentDescription::storeOp)
+        .def_readwrite("stencil_load_op", &VkAttachmentDescription::stencilLoadOp)
+        .def_readwrite("stencil_store_op", &VkAttachmentDescription::stencilStoreOp)
+        .def_readwrite("initial_layout", &VkAttachmentDescription::initialLayout)
+        .def_readwrite("final_layout", &VkAttachmentDescription::finalLayout);
+ 
+
+    py::class_<VkAttachmentReference>(m, "AttachmentReference")
+        .def(py::init<>())
+        .def_readwrite("attachment", &VkAttachmentReference::attachment)
+        .def_readwrite("layout", &VkAttachmentReference::layout);
 
     py::enum_<VkImageUsageFlagBits>(m, "ImageUsage", py::arithmetic())
         .value("TRANSFER_SRC", VK_IMAGE_USAGE_TRANSFER_SRC_BIT)
@@ -2022,44 +2170,27 @@ PYBIND11_MODULE(pyvku, m) {
         .value("SAMPLED_IMAGE_YCBCR_CONVERSION_SEPARATE_RECONSTRUCTION_FILTER_KHR", VK_FORMAT_FEATURE_SAMPLED_IMAGE_YCBCR_CONVERSION_SEPARATE_RECONSTRUCTION_FILTER_BIT_KHR)
         .value("SAMPLED_IMAGE_YCBCR_CONVERSION_CHROMA_RECONSTRUCTION_EXPLICIT_KHR", VK_FORMAT_FEATURE_SAMPLED_IMAGE_YCBCR_CONVERSION_CHROMA_RECONSTRUCTION_EXPLICIT_BIT_KHR);
 
-    py::enum_<VkImageLayout>(m, "ImageLayout")
-        .value("UNDEFINED", VK_IMAGE_LAYOUT_UNDEFINED)
-        .value("GENERAL", VK_IMAGE_LAYOUT_GENERAL)
-        .value("COLOR_ATTACHMENT_OPTIMAL", VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
-        .value("DEPTH_STENCIL_ATTACHMENT_OPTIMAL", VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-        .value("DEPTH_STENCIL_READ_ONLY_OPTIMAL", VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL)
-        .value("SHADER_READ_ONLY_OPTIMAL", VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
-        .value("TRANSFER_SRC_OPTIMAL", VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
-        .value("TRANSFER_DST_OPTIMAL", VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
-        .value("PREINITIALIZED", VK_IMAGE_LAYOUT_PREINITIALIZED)
-        .value("PRESENT_SRC_KHR", VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
-
-    py::enum_<VkAttachmentLoadOp>(m, "AttachmentLoadOp")
-        .value("DONT_CARE", VK_ATTACHMENT_LOAD_OP_DONT_CARE)
-        .value("CLEAR", VK_ATTACHMENT_LOAD_OP_CLEAR)
-        .value("LOAD", VK_ATTACHMENT_LOAD_OP_LOAD);
-
-    py::enum_<VkAttachmentStoreOp>(m, "AttachmentStoreOp")
-        .value("DONT_CARE", VK_ATTACHMENT_STORE_OP_DONT_CARE)
-        .value("STORE", VK_ATTACHMENT_STORE_OP_STORE);
-
-    py::enum_<VkSampleCountFlagBits>(m, "SampleCount", py::arithmetic())
-        .value("_1", VK_SAMPLE_COUNT_1_BIT);
-
     py::enum_<VkPipelineBindPoint>(m, "PipelineBindPoint")
         .value("GRAPHICS", VK_PIPELINE_BIND_POINT_GRAPHICS);
 
     py::class_<VkClearValue>(m, "ClearValue")
         .def(py::init([](std::array<float, 4> values) -> VkClearValue  {
-            VkClearValue result = { {values[0], values[1], values[2], values[3]} };
+            VkClearValue result;
+            result.color.float32[0] = values[0];
+            result.color.float32[1] = values[1];
+            result.color.float32[2] = values[2];
+            result.color.float32[3] = values[3];
             return result;
         }))
+        /*
         .def(py::init([](std::array<uint32_t, 4> values) -> VkClearValue {
             VkClearValue result = { {values[0], values[1], values[2], values[3]} };
             return result;
         }))
+        */
         .def(py::init([](float depth, uint32_t stencil) -> VkClearValue {
-            VkClearValue result = { {depth, stencil} };
+            VkClearValue result;
+            result.depthStencil = VkClearDepthStencilValue{depth, stencil};
             return result;
         }))
         .def_readwrite("color", &VkClearValue::color)
@@ -2570,5 +2701,15 @@ PYBIND11_MODULE(pyvku, m) {
             .def_readwrite("stage_flags", &VkPushConstantRange::stageFlags)
             .def_readwrite("offset", &VkPushConstantRange::offset)
             .def_readwrite("size", &VkPushConstantRange::size);
+
+        py::class_< Imgui, std::shared_ptr<Imgui>>(m, "Imgui")
+            .def(py::init<std::shared_ptr<Window>, vku::Instance, PhysicalDevice, vku::Device, vku::Queue, uint32_t, vku::CommandPool, VkSampleCountFlagBits>(),
+                py::arg("window"), py::arg("instance"), py::arg("physical_device"), py::arg("device"), py::arg("queue"), py::arg("queue_family"), py::arg("command_pool"), py::arg("sample_count") = VK_SAMPLE_COUNT_1_BIT)
+            .def("init", &Imgui::init)
+            .def("set_image_count", &Imgui::set_image_count)
+            .def("wait_init", &Imgui::wait_init)
+            .def("new_frame", &Imgui::new_frame)
+            .def("render", &Imgui::render)
+            .def("destroy", &Imgui::destroy);
 }
 
