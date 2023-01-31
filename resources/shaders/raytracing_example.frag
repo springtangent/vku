@@ -58,7 +58,7 @@ struct ShapeStruct
 };
 
 layout(set = 0, binding = 0) buffer ShapeBuffer {
-    Shape shapes[];
+    ShapeStruct shapes[];
 } shape_buffer;
 
 const int DIRECTIONAL = 0;
@@ -79,7 +79,7 @@ struct LightStruct
 };
 
 layout(set = 0, binding = 1) buffer LightBuffer {
-    Light lights[];
+    LightStruct lights[];
 } light_buffer;
 
 struct Material
@@ -361,6 +361,7 @@ void main()
         vec3 p = ray_origin + ray_direction * distance;
         vec3 n = sdf_normal(p);
         frag_color = vec4(shade(p, jade, ray_direction, n), 1.0);
+        
     }
     else
     {

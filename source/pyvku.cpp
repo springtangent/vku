@@ -335,7 +335,6 @@ struct Imgui
     uint32_t min_image_count{ 3 };
     uint32_t image_count{ 3 };
     VkSampleCountFlagBits samples{ VK_SAMPLE_COUNT_1_BIT };
-    bool show_demo_window = true;
 
     vku::SingleTimeCommandExecutor init_executor{};
     VkCommandPool command_pool{ VK_NULL_HANDLE };
@@ -439,10 +438,6 @@ struct Imgui
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
-
-        // 1. Show the big demo window (Most of the sample code is in ImGui::ShowDemoWindow()! You can browse its code to learn more about Dear ImGui!).
-        if (show_demo_window)
-            ImGui::ShowDemoWindow(&show_demo_window);
     }
 
     void render(vku::CommandBuffer command_buffer)
@@ -458,6 +453,64 @@ struct Imgui
         ImGui_ImplVulkan_Shutdown();
         ImGui_ImplGlfw_Shutdown();
         ImGui::DestroyContext();
+    }
+
+    bool begin(const char* name)
+    {
+        return ImGui::Begin(name);
+    }
+
+    void end()
+    {
+        ImGui::End();
+    }
+
+    void text(const char *txt)
+    {
+        ImGui::Text(txt);
+    }
+
+    std::tuple<bool, bool> checkbox(const char *label, bool state)
+    {
+        bool res = ImGui::Checkbox(label, &state);
+        return { state, res };
+    }
+
+    bool button(const char* label)
+    {
+        return ImGui::Button(label);
+    }
+
+    std::tuple<float, bool> slider_float(const char* label, float value, float vmin, float vmax)
+    {
+        bool result = ImGui::SliderFloat(label, &value, vmin, vmax);
+        return { value, result };
+    }
+
+    bool tree_node(const char* label)
+    {
+        return ImGui::TreeNode(label);
+    }
+
+    void tree_pop()
+    {
+        ImGui::TreePop();
+    }
+
+    bool tree_node_ex(const char *label, ImGuiTreeNodeFlags flags)
+    {
+        return ImGui::TreeNodeEx(label, flags);
+    }
+
+    std::tuple<float, bool> input_float(const char *label, float value, float step=0.0f, float step_fast=0.0f, const char *format="%.3f")
+    {
+        bool res = ImGui::InputFloat(label, &value, step, step_fast, format);
+        return { value, res };
+    }
+
+    bool selectable(const char* label, bool selected, ImGuiSelectableFlags flags = 0, std::array<float, 2> size = { 0.0f, 0.0f })
+    {
+        return ImGui::Selectable(label, selected, flags, ImVec2(size[0], size[1]));
     }
 };
 
@@ -1616,22 +1669,6 @@ void cmd_copy_buffer_to_image(const vku::CommandBuffer &command_buffer, const vk
     vkCmdCopyBufferToImage(command_buffer, src_buffer, dst_image, dst_image_layout, regions.size(), regions.data());
 }
 
-
-void bind_vk_aabb_positions_khr(py::module& m) {
-    py::class_<VkAabbPositionsKHR> aabb_positions_khr(m, "AabbPositions");
-    aabb_positions_khr.def(py::init<>())
-        .def(py::init<float, float, float, float, float, float>(),
-            py::arg("min_x") = 0.0f, py::arg("min_y") = 0.0f, py::arg("min_z") = 0.0f,
-            py::arg("max_x") = 0.0f, py::arg("max_y") = 0.0f, py::arg("max_z") = 0.0f)
-        .def_readwrite("min_x", &VkAabbPositionsKHR::minX)
-        .def_readwrite("min_y", &VkAabbPositionsKHR::minY)
-        .def_readwrite("min_z", &VkAabbPositionsKHR::minZ)
-        .def_readwrite("max_x", &VkAabbPositionsKHR::maxX)
-        .def_readwrite("max_y", &VkAabbPositionsKHR::maxY)
-        .def_readwrite("max_z", &VkAabbPositionsKHR::maxZ);
-}
-
-
 void cmd_push_constants(
     const vku::CommandBuffer& command_buffer,
     const vku::PipelineLayout &pipeline_layout,
@@ -1834,26 +1871,107 @@ inline void bind_glfw_key_tokens(py::module m)
     m.attr("ACTION_RELEASE") = py::int_((int)GLFW_RELEASE);
 }
 
-PYBIND11_MODULE(pyvku, m) {
-    m.doc() = "vku test"; // optional module docstring
 
+inline void bind_imgui(py::module m)
+{
+    py::enum_<ImGuiSelectableFlags_>(m, "SelectableFlags", py::arithmetic())
+        .value("None_", ImGuiSelectableFlags_::ImGuiSelectableFlags_None)
+        .value("DontClosePopups", ImGuiSelectableFlags_::ImGuiSelectableFlags_DontClosePopups)
+        .value("SpanAllColumns", ImGuiSelectableFlags_::ImGuiSelectableFlags_SpanAllColumns)
+        .value("AllowDoubleClick", ImGuiSelectableFlags_::ImGuiSelectableFlags_AllowDoubleClick)
+        .value("Disabled", ImGuiSelectableFlags_::ImGuiSelectableFlags_Disabled)
+        .value("AllowItemOverlap", ImGuiSelectableFlags_::ImGuiSelectableFlags_AllowItemOverlap);
+
+    py::class_<Imgui, std::shared_ptr<Imgui>>(m, "Imgui")
+        .def(py::init<std::shared_ptr<Window>, vku::Instance, PhysicalDevice, vku::Device, vku::Queue, uint32_t, vku::CommandPool, VkSampleCountFlagBits>(),
+            py::arg("window"), py::arg("instance"), py::arg("physical_device"), py::arg("device"), py::arg("queue"), py::arg("queue_family"), py::arg("command_pool"), py::arg("sample_count") = VK_SAMPLE_COUNT_1_BIT)
+        .def("init", &Imgui::init)
+        .def("set_image_count", &Imgui::set_image_count)
+        .def("wait_init", &Imgui::wait_init)
+        .def("new_frame", &Imgui::new_frame)
+        .def("render", &Imgui::render)
+        .def("destroy", &Imgui::destroy)
+        .def("begin", &Imgui::begin)
+        .def("end", &Imgui::end)
+        .def("text", &Imgui::text)
+        .def("button", &Imgui::button)
+        .def("input_float", &Imgui::input_float, py::arg("label"), py::arg("value"), py::arg("step") = 0.0f, py::arg("step_fast") = 0.0f, py::arg("format") = "%.3f")
+        .def("checkbox", &Imgui::checkbox)
+        .def("tree_node", &Imgui::tree_node)
+        .def("tree_pop", &Imgui::tree_pop)
+        .def("selectable", &Imgui::selectable, py::arg("label"), py::arg("selected"), py::arg("flags") = 0, py::arg("size") = std::array<float, 2>{ 0.0f, 0.0f });
+
+
+}
+
+
+inline void bind_stb_image(py::module m)
+{
     m.attr("GREY") = py::int_((int)STBI_grey);
     m.attr("GREY_ALPHA") = py::int_((int)STBI_grey_alpha);
     m.attr("RGB") = py::int_((int)STBI_rgb);
     m.attr("RGB_ALPHA") = py::int_((int)STBI_rgb_alpha);
-   
-    bind_vk_aabb_positions_khr(m);
+
+    m.def("load_image", load_image);
+
+    py::class_<ImageData>(m, "ImageData")
+        .def_readonly("channels", &ImageData::channels)
+        .def_readonly("height", &ImageData::height)
+        .def_readonly("width", &ImageData::width)
+        .def("is_valid", &ImageData::is_valid)
+        .def("get_data", &ImageData::get_data)
+        .def_property_readonly("extent", &ImageData::extent)
+        .def_property_readonly("size", &ImageData::size);
+}
+
+
+inline void bind_glfw(py::module m)
+{
     bind_glfw_key_tokens(m);
     bind_glfw_input_events(m);
-
-
 
     m.def("create_window", create_window)
         .def("init", init)
         .def("terminate", _terminate)
         .def("window_hint", window_hint)
-        .def("poll_events", poll_events)
-        .def("create_framebuffer", create_framebuffer)
+        .def("poll_events", poll_events);
+}
+
+
+inline void bind_vk(py::module m)
+{
+    py::class_<VkAabbPositionsKHR> aabb_positions_khr(m, "AabbPositions");
+    aabb_positions_khr.def(py::init<>())
+        .def(py::init<float, float, float, float, float, float>(),
+            py::arg("min_x") = 0.0f, py::arg("min_y") = 0.0f, py::arg("min_z") = 0.0f,
+            py::arg("max_x") = 0.0f, py::arg("max_y") = 0.0f, py::arg("max_z") = 0.0f)
+        .def_readwrite("min_x", &VkAabbPositionsKHR::minX)
+        .def_readwrite("min_y", &VkAabbPositionsKHR::minY)
+        .def_readwrite("min_z", &VkAabbPositionsKHR::minZ)
+        .def_readwrite("max_x", &VkAabbPositionsKHR::maxX)
+        .def_readwrite("max_y", &VkAabbPositionsKHR::maxY)
+        .def_readwrite("max_z", &VkAabbPositionsKHR::maxZ);
+
+    py::enum_<VkSampleCountFlagBits>(m, "SampleCount", py::arithmetic())
+        .value("_1", VK_SAMPLE_COUNT_1_BIT);
+}
+
+inline void bind_vku(py::module m)
+{
+
+}
+
+
+PYBIND11_MODULE(pyvku, m) {
+    m.doc() = "vku test"; // optional module docstring
+
+    bind_stb_image(m);
+    bind_glfw(m);
+    bind_vk(m);
+    bind_vku(m);
+    bind_imgui(m);
+   
+    m.def("create_framebuffer", create_framebuffer)
         .def("create_render_pass", create_render_pass)
         .def("create_command_pool", create_command_pool)
         .def("create_semaphore", create_semaphore)
@@ -1882,7 +2000,6 @@ PYBIND11_MODULE(pyvku, m) {
         .def("cmd_copy_buffer", cmd_copy_buffer)
         .def("cmd_bind_index_buffer", cmd_bind_index_buffer)
         .def("cmd_draw_indexed", cmd_draw_indexed)
-        .def("load_image", load_image)
         .def("cmd_bind_descriptor_sets", cmd_bind_descriptor_sets)
         .def("cmd_pipeline_barrier", cmd_pipeline_barrier, 
             py::arg("command_buffer"), py::arg("src_stage_mask"), py::arg("dst_stage_mask"), py::arg("dependency_flags"), py::arg("image_memory_barriers"))
@@ -2075,9 +2192,6 @@ PYBIND11_MODULE(pyvku, m) {
         .value("D32_SFLOAT", VK_FORMAT_D32_SFLOAT)
         .value("D32_SFLOAT_S8_UINT", VK_FORMAT_D32_SFLOAT_S8_UINT)
         .value("D24_UNORM_S8_UINT", VK_FORMAT_D24_UNORM_S8_UINT);
-
-    py::enum_<VkSampleCountFlagBits>(m, "SampleCount", py::arithmetic())
-        .value("_1", VK_SAMPLE_COUNT_1_BIT);
 
     py::enum_<VkAttachmentLoadOp>(m, "AttachmentLoadOp")
         .value("DONT_CARE", VK_ATTACHMENT_LOAD_OP_DONT_CARE)
@@ -2604,15 +2718,6 @@ PYBIND11_MODULE(pyvku, m) {
             .value("UINT16", VK_INDEX_TYPE_UINT16)
             .value("UINT32", VK_INDEX_TYPE_UINT32);
 
-        py::class_<ImageData>(m, "ImageData")
-            .def_readonly("channels", &ImageData::channels)
-            .def_readonly("height", &ImageData::height)
-            .def_readonly("width", &ImageData::width)
-            .def("is_valid", &ImageData::is_valid)
-            .def("get_data", &ImageData::get_data)
-            .def_property_readonly("extent", &ImageData::extent)
-            .def_property_readonly("size", &ImageData::size);
-
         py::class_< DescriptorPoolBuilder>(m, "DescriptorPoolBuilder")
             .def(py::init<vku::Device>())
             .def("build", &DescriptorPoolBuilder::build)
@@ -2701,15 +2806,5 @@ PYBIND11_MODULE(pyvku, m) {
             .def_readwrite("stage_flags", &VkPushConstantRange::stageFlags)
             .def_readwrite("offset", &VkPushConstantRange::offset)
             .def_readwrite("size", &VkPushConstantRange::size);
-
-        py::class_< Imgui, std::shared_ptr<Imgui>>(m, "Imgui")
-            .def(py::init<std::shared_ptr<Window>, vku::Instance, PhysicalDevice, vku::Device, vku::Queue, uint32_t, vku::CommandPool, VkSampleCountFlagBits>(),
-                py::arg("window"), py::arg("instance"), py::arg("physical_device"), py::arg("device"), py::arg("queue"), py::arg("queue_family"), py::arg("command_pool"), py::arg("sample_count") = VK_SAMPLE_COUNT_1_BIT)
-            .def("init", &Imgui::init)
-            .def("set_image_count", &Imgui::set_image_count)
-            .def("wait_init", &Imgui::wait_init)
-            .def("new_frame", &Imgui::new_frame)
-            .def("render", &Imgui::render)
-            .def("destroy", &Imgui::destroy);
 }
 
