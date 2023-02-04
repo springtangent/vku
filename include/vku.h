@@ -30,6 +30,8 @@ SOFTWARE.
 #include <system_error>
 #include <limits>
 #include <array>
+#include <optional>
+#include <iostream>
 
 namespace vku
 {
@@ -128,6 +130,8 @@ namespace vku
 			result.clear();
 			return *this;
 		}
+	
+		std::error_code get_error() const { assert(!has_value); return error.type; }
 	private:
 		inline void destroy()
 		{
@@ -256,7 +260,10 @@ namespace vku
 			callback_failed,
 			end_command_buffer_failed,
 			queue_submit_failed,
-			wait_idle_failed
+			wait_idle_failed,
+			already_in_progress,
+			create_fence_failed,
+			wait_failed
 		};
 
 		struct CommandBufferExecutorErrorCategory : std::error_category
@@ -286,6 +293,12 @@ namespace vku
 					return "wait_idle_failed";
 				case CommandBufferExecutorError::end_command_buffer_failed:
 					return "end_command_buffer_failed";
+				case CommandBufferExecutorError::already_in_progress:
+					return "already_in_progress";
+				case CommandBufferExecutorError::create_fence_failed:
+					return "create_fence_failed";
+				case CommandBufferExecutorError::wait_failed:
+					return "wait_failed";
 				default:
 					return "unknown";
 				}
@@ -335,66 +348,753 @@ namespace vku
 		}
 	};
 
+	const uint32_t MEMORY_TYPE_NOT_FOUND = std::numeric_limits<uint32_t>::max();
+	const uint32_t PHYSICAL_DEVICE_NOT_PROVIDED = MEMORY_TYPE_NOT_FOUND - 1;
 
-	// RAII shader module class
-	class ShaderModule
+	inline uint32_t find_memory_type(VkPhysicalDevice physical_device, uint32_t type_filter, VkMemoryPropertyFlags  properties)
+	{
+		if (physical_device == VK_NULL_HANDLE)
+		{
+			return PHYSICAL_DEVICE_NOT_PROVIDED;
+		}
+
+		VkPhysicalDeviceMemoryProperties memProperties;
+		vkGetPhysicalDeviceMemoryProperties(physical_device, &memProperties);
+
+		for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++)
+		{
+			if ((type_filter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties)
+			{
+				return i;
+			}
+		}
+
+		return MEMORY_TYPE_NOT_FOUND;
+	}
+
+
+	class Instance
 	{
 	public:
-		ShaderModule() : device(VK_NULL_HANDLE), shader_module(VK_NULL_HANDLE) { }
+		Instance(const vkb::Instance& value) : handle(value) { }
 
-		ShaderModule(VkDevice d, VkShaderModule s) : device(d), shader_module(s) { }
+		inline operator VkInstance() const { return handle; };
+		vkb::Instance handle;
 
-		ShaderModule(ShaderModule &&s) noexcept : device(s.device), shader_module(s.shader_module)
+		void destroy()
 		{
-			s.clear();
+			vkb::destroy_instance(handle);
+		}
+	};
+
+
+	// forward decs for device
+	class Queue;
+
+	class Device
+	{
+	public:
+		Device(vkb::Device& d) : device(d) { }
+
+		inline void destroy() noexcept
+		{
+			vkb::destroy_device(device);
 		}
 
-		ShaderModule(const ShaderModule& s) = delete;
-
-		~ShaderModule()
+		inline operator VkDevice() const
 		{
-			destroy();
+			return (VkDevice)device;
 		}
 
-		inline ShaderModule& operator=(ShaderModule&& s)
+		void wait_idle()
 		{
-			device = s.device;
-			shader_module = s.shader_module;
-			s.clear();
-			return *this;
+			auto vk_result = vkDeviceWaitIdle(device);
+			// TODO: error handling.
 		}
 
-		inline operator VkShaderModule() const
+		Queue get_queue(vkb::QueueType queue_type);
+
+		uint32_t get_queue_index(vkb::QueueType queue_type) const
 		{
-			return shader_module;
+			auto res = device.get_queue_index(queue_type);
+
+			if (!res.has_value())
+			{
+				throw std::runtime_error(res.error().message());
+			}
+
+			return res.value();
+		}
+
+		vkb::Device& get_device() { return device; }
+	protected:
+		vkb::Device device;
+	};
+
+
+	template<typename T, typename P = VkDevice>
+	class VkHandle
+	{
+	public:
+		VkHandle() : parent(VK_NULL_HANDLE), handle(VK_NULL_HANDLE) { }
+
+		VkHandle(P p, T h) : parent(p), handle(h) { }
+
+		inline operator T() const
+		{
+			return handle;
+		}
+
+		inline P get_parent() const
+		{
+			return parent;
+		}
+
+		inline void clear()
+		{
+			parent = VK_NULL_HANDLE;
+			handle = VK_NULL_HANDLE;
 		}
 
 		inline bool is_valid() const
 		{
-			return device != VK_NULL_HANDLE && shader_module != VK_NULL_HANDLE;
+			return parent != VK_NULL_HANDLE && handle != VK_NULL_HANDLE;
 		}
-	private:
-		inline void clear() noexcept
-		{
-			device = VK_NULL_HANDLE;
-			shader_module = VK_NULL_HANDLE;
-		}
+	protected:
+		P parent{ VK_NULL_HANDLE };
+		T handle{ VK_NULL_HANDLE };
+	};
+
+
+
+
+
+	class Surface : public VkHandle<VkSurfaceKHR, VkInstance>
+	{
+	public:
+		Surface() : VkHandle<VkSurfaceKHR, VkInstance>(VK_NULL_HANDLE, VK_NULL_HANDLE) {}
+
+		Surface(VkInstance p, VkSurfaceKHR h) : VkHandle<VkSurfaceKHR, VkInstance>(p, h) {}
 
 		inline void destroy() noexcept
 		{
-			if(VK_NULL_HANDLE != device && VK_NULL_HANDLE != shader_module)
+			if (is_valid())
 			{
-				vkDestroyShaderModule(device, shader_module, nullptr);
+				vkDestroySurfaceKHR(parent, handle, nullptr);
+			}
+			clear();
+		}
+	};
+
+	class RenderPass : public VkHandle<VkRenderPass>
+	{
+	public:
+		RenderPass() : VkHandle<VkRenderPass>(VK_NULL_HANDLE, VK_NULL_HANDLE) {}
+
+		RenderPass(VkDevice d, VkRenderPass m) : VkHandle<VkRenderPass>(d, m) {}
+
+		inline void destroy() noexcept
+		{
+			if (is_valid())
+			{
+				vkDestroyRenderPass(parent, handle, nullptr);
+			}
+			clear();
+		}
+	};
+
+	class Framebuffer : public VkHandle<VkFramebuffer>
+	{
+	public:
+		Framebuffer() : VkHandle<VkFramebuffer>(VK_NULL_HANDLE, VK_NULL_HANDLE) {}
+
+		Framebuffer(VkDevice d, VkFramebuffer h) : VkHandle<VkFramebuffer>(d, h) {}
+
+		inline void destroy() noexcept
+		{
+			if (is_valid())
+			{
+				vkDestroyFramebuffer(parent, handle, nullptr);
+			}
+			clear();
+		}
+	};
+
+	class Semaphore : public VkHandle<VkSemaphore>
+	{
+	public:
+		Semaphore() : VkHandle<VkSemaphore>(VK_NULL_HANDLE, VK_NULL_HANDLE) {}
+
+		Semaphore(VkDevice d, VkSemaphore h) : VkHandle<VkSemaphore>(d, h) {}
+
+		inline void destroy() noexcept
+		{
+			if (is_valid())
+			{
+				vkDestroySemaphore(parent, handle, nullptr);
+			}
+			clear();
+		}
+	};
+
+	class ImageView : public VkHandle<VkImageView>
+	{
+	public:
+		ImageView() : VkHandle<VkImageView>(VK_NULL_HANDLE, VK_NULL_HANDLE) {}
+
+		ImageView(VkDevice d, VkImageView m) : VkHandle<VkImageView>(d, m) {}
+
+		inline void destroy() noexcept
+		{
+			if (is_valid())
+			{
+				vkDestroyImageView(parent, handle, nullptr);
+			}
+			clear();
+		}
+	};
+
+	class DescriptorPool : public VkHandle<VkDescriptorPool>
+	{
+	public:
+		DescriptorPool() : VkHandle<VkDescriptorPool>(VK_NULL_HANDLE, VK_NULL_HANDLE) {}
+
+		DescriptorPool(VkDevice d, VkDescriptorPool m) : VkHandle<VkDescriptorPool>(d, m) {}
+
+		inline void destroy() noexcept
+		{
+			if (is_valid())
+			{
+				vkDestroyDescriptorPool(parent, handle, nullptr);
+			}
+			clear();
+		}
+	};
+
+
+	class DescriptorSet : public VkHandle<VkDescriptorSet>
+	{
+	public:
+		DescriptorSet() : VkHandle<VkDescriptorSet>(VK_NULL_HANDLE, VK_NULL_HANDLE), descriptor_pool(VK_NULL_HANDLE) {}
+
+		DescriptorSet(VkDevice d, VkDescriptorSet m, VkDescriptorPool dp) : VkHandle<VkDescriptorSet>(d, m), descriptor_pool(dp) {}
+
+		inline void destroy() noexcept
+		{
+			if (is_valid())
+			{
+				vkFreeDescriptorSets(parent, descriptor_pool, 1, &handle);
 			}
 			clear();
 		}
 
-		VkDevice device{ VK_NULL_HANDLE };
-		VkShaderModule shader_module{ VK_NULL_HANDLE };
+		inline void clear()
+		{
+			VkHandle<VkDescriptorSet>::clear();
+			descriptor_pool = VK_NULL_HANDLE;
+		}
+	protected:
+		VkDescriptorPool descriptor_pool;
+	};
+
+	class Image : public VkHandle<VkImage>
+	{
+	public:
+		Image() : VkHandle<VkImage>(), memory(VK_NULL_HANDLE), source_stage(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT) { }
+		Image(
+			VkDevice d, 
+			VkImage i, 
+			VkDeviceMemory m, 
+			VkPipelineStageFlagBits s= VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT) : 
+			VkHandle<VkImage>(d, i), 
+			memory(m),
+			source_stage(s)
+		{ }
+
+		inline void destroy()
+		{
+			if (parent == VK_NULL_HANDLE)
+			{
+				// we can't really destroy it; this could be intentional for swapchain images, but if it's
+				// not it should at least cause validation errors;
+				return;
+			}
+
+			if (handle != VK_NULL_HANDLE)
+			{
+				vkDestroyImage(parent, handle, nullptr);
+			}
+
+			if (memory != VK_NULL_HANDLE)
+			{
+				vkFreeMemory(parent, memory, nullptr);
+			}
+
+			clear();
+		}
+
+		inline void clear()
+		{
+			VkHandle<VkImage>::clear();
+			memory = VK_NULL_HANDLE;
+			source_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+		}
+
+		VkImageLayout layout{ VK_IMAGE_LAYOUT_UNDEFINED };
+		VkPipelineStageFlagBits source_stage{ VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT };
+		VkAccessFlags src_access_mask{ VK_ACCESS_NONE };
+	protected:
+		VkDeviceMemory memory{ VK_NULL_HANDLE };
 	};
 
 
-	inline Result<ShaderModule> create_shader_module(VkDevice device, const std::vector<char>& code)
+	class Sampler : public VkHandle<VkSampler>
+	{
+	public:
+		Sampler() : VkHandle<VkSampler>() { }
+		Sampler(VkDevice d, VkSampler s) : VkHandle<VkSampler>(d, s) { }
+
+		inline void destroy()
+		{
+			if (parent != VK_NULL_HANDLE && handle != VK_NULL_HANDLE)
+			{
+				vkDestroySampler(parent, handle, nullptr);
+			}
+
+			clear();
+		}
+	protected:
+	};
+
+
+	class ImageFactory
+	{
+	public:
+		ImageFactory(VkPhysicalDevice pd, VkDevice d) : physical_device(pd), device(d) { }
+
+		Result<Image> build_image(VkImageCreateInfo create_info, VkMemoryPropertyFlags properties)
+		{
+			VkImage image{ VK_NULL_HANDLE };
+			auto vk_create_image_result = vkCreateImage(device, &create_info, nullptr, &image);
+			if (vk_create_image_result != VK_SUCCESS)
+			{
+				// TODO: error handling.
+				return Result<Image>{ Error{} };
+			}
+
+			VkMemoryRequirements mem_reqs;
+			vkGetImageMemoryRequirements(device, image, &mem_reqs);
+
+			VkMemoryAllocateInfo alloc_info{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+			alloc_info.allocationSize = mem_reqs.size;
+			alloc_info.memoryTypeIndex = find_memory_type(physical_device, mem_reqs.memoryTypeBits, properties);
+
+			VkDeviceMemory image_memory{ VK_NULL_HANDLE };
+			auto vk_alloc_result = vkAllocateMemory(device, &alloc_info, nullptr, &image_memory);
+
+			if (vk_alloc_result != VK_SUCCESS)
+			{
+				// TODO: error handling
+				return Result<Image>{ Error{} };
+			}
+
+			vkBindImageMemory(device, image, image_memory, 0);
+
+			return Image(device, image, image_memory);
+		}
+		
+		Result<Image> build_image_2d(VkExtent2D extent, VkFormat format, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImageTiling tiling= VK_IMAGE_TILING_OPTIMAL)
+		{
+			VkImageCreateInfo image_info{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+			image_info.pNext = nullptr;
+			image_info.imageType = VK_IMAGE_TYPE_2D;
+			image_info.extent = { extent.width, extent.height, 1 };
+			image_info.mipLevels = 1;
+			image_info.arrayLayers = 1;
+			image_info.format = format;
+			image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+			image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+			image_info.samples = VK_SAMPLE_COUNT_1_BIT;
+			image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+			image_info.usage = usage;
+
+			return build_image(image_info, properties);
+		}
+	private:
+		VkPhysicalDevice physical_device{ VK_NULL_HANDLE };
+		VkDevice device{ VK_NULL_HANDLE };
+	};
+
+
+	class ShaderModule : public VkHandle<VkShaderModule>
+	{
+	public:
+		ShaderModule() : VkHandle<VkShaderModule>() {}
+
+		ShaderModule(VkDevice d, VkShaderModule m) : VkHandle<VkShaderModule>(d, m) {}
+
+		inline void destroy() noexcept
+		{
+			if (is_valid())
+			{
+				vkDestroyShaderModule(parent, handle, nullptr);
+			}
+			clear();
+		}
+	};
+
+
+	class PipelineLayout : public VkHandle<VkPipelineLayout>
+	{
+	public:
+		PipelineLayout() : VkHandle<VkPipelineLayout>() { }
+
+		PipelineLayout(VkDevice d, VkPipelineLayout s) : VkHandle<VkPipelineLayout>(d, s) { }
+
+		inline void destroy()
+		{
+			if (is_valid())
+			{
+				vkDestroyPipelineLayout(parent, handle, nullptr);
+			}
+			clear();
+		}
+	};
+
+
+	class Pipeline : public VkHandle<VkPipeline>
+	{
+	public:
+		Pipeline() : VkHandle<VkPipeline>(), layout(VK_NULL_HANDLE) { }
+
+		Pipeline(VkDevice d, VkPipeline p, VkPipelineLayout pl) : VkHandle<VkPipeline>(d, p), layout(pl) { }
+
+		inline void destroy()
+		{
+			if (is_valid())
+			{
+				vkDestroyPipeline(parent, handle, nullptr);
+			}
+			clear();
+		}
+
+		inline VkPipelineLayout get_layout() const
+		{
+			return layout;
+		}
+	protected:
+		VkPipelineLayout layout{ VK_NULL_HANDLE };
+	};
+
+
+	class Buffer : public VkHandle<VkBuffer>
+	{
+	public:
+		Buffer(VkDevice d = VK_NULL_HANDLE, VkBuffer b = VK_NULL_HANDLE, VkDeviceMemory m = VK_NULL_HANDLE, VkDeviceSize s = 0, void* map = nullptr) : VkHandle<VkBuffer>(d, b), memory(m), size(s), mapped(map) { }
+
+		inline operator VkBuffer() const
+		{
+			return handle;
+		}
+
+		inline bool is_valid() const
+		{
+			return VkHandle<VkBuffer>::is_valid() && memory != VK_NULL_HANDLE;
+		}
+
+		inline void destroy()
+		{
+			if (handle != VK_NULL_HANDLE)
+			{
+				vkDestroyBuffer(parent, handle, nullptr);
+			}
+
+			if (memory != VK_NULL_HANDLE)
+			{
+				vkFreeMemory(parent, memory, nullptr);
+			}
+
+			clear();
+		}
+
+		inline VkResult map_memory(VkDeviceSize s = VK_WHOLE_SIZE, VkDeviceSize offset = 0)
+		{
+			// TODO: test for validity, convey non-vk errors.
+			return vkMapMemory(parent, memory, offset, s, offset, &mapped);
+		}
+
+		inline void* get_mapped() const
+		{
+			return mapped;
+		}
+
+		inline VkDeviceSize get_size() const
+		{
+			return size;
+		}
+
+		inline void unmap_memory()
+		{
+			vkUnmapMemory(parent, memory);
+			mapped = nullptr;
+		}
+
+		inline void clear()
+		{
+			VkHandle<VkBuffer>::clear();
+			memory = VK_NULL_HANDLE;
+			size = 0;
+			mapped = nullptr;
+		}
+	protected:
+		VkDeviceMemory memory{ VK_NULL_HANDLE };
+		VkDeviceSize size{ 0 };
+		void* mapped{ nullptr };
+		VkDeviceAddress device_address{ 0 };
+
+		friend class BufferAddressGetter;
+	};
+
+
+	class Fence : public VkHandle<VkFence>
+	{
+	public:
+		Fence() : VkHandle<VkFence>() { }
+		Fence(VkDevice d, VkFence f) : VkHandle<VkFence>(d, f) { }
+
+		void destroy()
+		{
+			if (is_valid())
+			{
+				vkDestroyFence(parent, handle, nullptr);
+			}
+			clear();
+		}
+	};
+
+
+	class CommandPool : public VkHandle<VkCommandPool>
+	{
+	public:
+		CommandPool() : VkHandle<VkCommandPool>() {}
+		CommandPool(VkDevice d, VkCommandPool p) : VkHandle<VkCommandPool>(d, p) { }
+
+		inline void destroy()
+		{
+			if (is_valid())
+			{
+				vkDestroyCommandPool(parent, handle, nullptr);
+			}
+
+			clear();
+		}
+	};
+
+	/*
+	class Semaphore : public VkHandle<VkSemaphore>
+	{
+	public:
+		Semaphore() : VkHandle<VkSemaphore>() {}
+		Semaphore(VkDevice d, VkSemaphore p) : VkHandle<VkSemaphore>(d, p) { }
+
+		inline void destroy()
+		{
+			if (is_valid())
+			{
+				vkDestroySemaphore(parent, handle, nullptr);
+			}
+
+			clear();
+		}
+	};
+	*/
+
+
+	class Queue : public VkHandle<VkQueue>
+	{
+	public:
+		Queue() : VkHandle<VkQueue>() {}
+		Queue(VkDevice d, VkQueue p) : VkHandle<VkQueue>(d, p) { }
+
+		inline void destroy()
+		{
+			// you don't need to destroy queues...
+			clear();
+		}
+	};
+
+
+	Queue Device::get_queue(vkb::QueueType queue_type)
+	{
+		auto res = device.get_queue(queue_type);
+
+		if (!res.has_value())
+		{
+			throw std::runtime_error(res.error().message());
+		}
+
+		return Queue(device, res.value());
+	}
+
+
+	class CommandBuffer : public VkHandle<VkCommandBuffer>
+	{
+	public:
+		CommandBuffer() : VkHandle<VkCommandBuffer>(), command_pool(VK_NULL_HANDLE)  {}
+		CommandBuffer(VkDevice d, VkCommandBuffer c, VkCommandPool p) : VkHandle<VkCommandBuffer>(d, c), command_pool(p) { }
+
+		bool is_valid() const
+		{
+			return VkHandle<VkCommandBuffer>::is_valid() && command_pool != VK_NULL_HANDLE;
+		}
+
+		void destroy()
+		{
+			if (is_valid())
+			{
+				vkFreeCommandBuffers(parent, command_pool, 1, &handle);
+			}
+			clear();
+		}
+	protected:
+		VkCommandPool command_pool{ VK_NULL_HANDLE };
+	};
+
+
+	enum class DescriptorType
+	{
+		SAMPLER = 0,				// VK_DESCRIPTOR_TYPE_SAMPLER = 0,
+		COMBINED_IMAGE_SAMPLER = 1,	// VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER = 1,
+		SAMPLED_IMAGE = 2,			// VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE = 2,
+		STORAGE_IMAGE = 3,			// VK_DESCRIPTOR_TYPE_STORAGE_IMAGE = 3,
+		UNIFORM_TEXEL_BUFFER = 4,	// VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER = 4,
+		STORAGE_TEXEL_BUFFER = 5,	// VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER = 5,
+		UNIFORM_BUFFER = 6,			// VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER = 6,
+		STORAGE_BUFFER = 7,			// VK_DESCRIPTOR_TYPE_STORAGE_BUFFER = 7,
+		UNIFORM_BUFFER_DYNAMIC = 8, // VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC = 8,
+		STORAGE_BUFFER_DYNAMIC = 9, // VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC = 9,
+		INPUT_ATTACHMENT = 10,		// VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT = 10,
+
+		/*
+		// Provided by VK_VERSION_1_3
+		INLINE_UNIFORM_BLOCK = 11,  // VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK = 1000138000,
+		// Provided by VK_KHR_acceleration_structure
+		ACCELERATION_STRUCTURE_KHR = 12, // VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR = 1000150000,
+		// Provided by VK_NV_ray_tracing
+		ACCELERATION_STRUCTURE_NV = 13, // VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV = 1000165000,
+		// Provided by VK_VALVE_mutable_descriptor_type
+		MUTABLE_VALVE = 14, // VK_DESCRIPTOR_TYPE_MUTABLE_VALVE = 1000351000,
+		// Provided by VK_QCOM_image_processing
+		SAMPLE_WEIGHT_IMAGE_QCOM = 15, // VK_DESCRIPTOR_TYPE_SAMPLE_WEIGHT_IMAGE_QCOM = 1000440000,
+		// Provided by VK_QCOM_image_processing
+		BLOCK_MATCH_IMAGE_QCOM = 16, // VK_DESCRIPTOR_TYPE_BLOCK_MATCH_IMAGE_QCOM = 1000440001,
+		// Provided by VK_EXT_inline_uniform_block
+		INLINE_UNIFORM_BLOCK_EXT = INLINE_UNIFORM_BLOCK,
+		*/
+		MAX = INPUT_ATTACHMENT + 1,
+		UNKNOWN = MAX + 1
+	};
+
+	DescriptorType from_vk(VkDescriptorType t)
+	{
+		switch (t)
+		{
+		case(VK_DESCRIPTOR_TYPE_SAMPLER):
+			return DescriptorType::SAMPLER;
+		case(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER):
+			return DescriptorType::COMBINED_IMAGE_SAMPLER;
+		case(VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE):
+			return DescriptorType::SAMPLED_IMAGE;
+		case(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE):
+			return DescriptorType::STORAGE_IMAGE;
+		case(VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER):
+			return DescriptorType::UNIFORM_TEXEL_BUFFER;
+		case(VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER):
+			return DescriptorType::STORAGE_TEXEL_BUFFER;
+		case(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER):
+			return DescriptorType::UNIFORM_BUFFER;
+		case(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER):
+			return DescriptorType::STORAGE_BUFFER;
+		case(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC):
+			return DescriptorType::UNIFORM_BUFFER_DYNAMIC;
+		case(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC):
+			return DescriptorType::STORAGE_BUFFER_DYNAMIC;
+		case(VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT):
+			return DescriptorType::INPUT_ATTACHMENT;
+		}
+
+		return DescriptorType::UNKNOWN;
+	}
+
+	VkDescriptorType to_vk(DescriptorType t)
+	{
+		switch (t)
+		{
+		case(DescriptorType::SAMPLER):
+			return VK_DESCRIPTOR_TYPE_SAMPLER;
+		case(DescriptorType::COMBINED_IMAGE_SAMPLER):
+			return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		case(DescriptorType::SAMPLED_IMAGE):
+			return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+		case(DescriptorType::STORAGE_IMAGE):
+			return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+		case(DescriptorType::UNIFORM_TEXEL_BUFFER):
+			return VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
+		case(DescriptorType::STORAGE_TEXEL_BUFFER):
+			return VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
+		case(DescriptorType::UNIFORM_BUFFER):
+			return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		case(DescriptorType::STORAGE_BUFFER):
+			return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		case(DescriptorType::UNIFORM_BUFFER_DYNAMIC):
+			return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+		case(DescriptorType::STORAGE_BUFFER_DYNAMIC):
+			return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
+		case(DescriptorType::INPUT_ATTACHMENT):
+			return VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+		}
+
+		return VK_DESCRIPTOR_TYPE_MAX_ENUM;
+	}
+
+
+
+
+
+	using DescriptorTypeCounts = std::array<uint16_t, static_cast<size_t>(DescriptorType::MAX)>;
+
+	class DescriptorSetLayout : public VkHandle<VkDescriptorSetLayout>
+	{
+	public:
+		DescriptorSetLayout() : VkHandle<VkDescriptorSetLayout>(), descriptor_pool(VK_NULL_HANDLE), descriptor_type_counts() { }
+		DescriptorSetLayout(VkDevice d, VkDescriptorSetLayout ds, const DescriptorTypeCounts& dsc) : VkHandle<VkDescriptorSetLayout>(d, ds), descriptor_type_counts(dsc) { }
+
+		inline void destroy()
+		{
+			if (is_valid())
+			{
+				vkDestroyDescriptorSetLayout(parent, handle, nullptr);
+			}
+
+			clear();
+		}
+
+	private:
+		inline void clear()
+		{
+			VkHandle<VkDescriptorSetLayout>::clear();
+			descriptor_pool = VK_NULL_HANDLE;
+			descriptor_type_counts = {};
+		}
+		VkDescriptorPool descriptor_pool{ VK_NULL_HANDLE };
+		DescriptorTypeCounts descriptor_type_counts{};
+
+		friend class DescriptorPoolBuilder; // allow access to descriptor_type_counts
+	};
+
+
+
+	inline Result<ShaderModule> create_shader_module(VkDevice device, const uint32_t *code, VkDeviceSize size)
 	{
 		if (VK_NULL_HANDLE == device)
 		{
@@ -402,8 +1102,8 @@ namespace vku
 		}
 		VkShaderModuleCreateInfo create_info = {};
 		create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-		create_info.codeSize = code.size();
-		create_info.pCode = reinterpret_cast<const uint32_t*> (code.data());
+		create_info.codeSize = size;
+		create_info.pCode = code;
 
 		VkShaderModule shader_module{ VK_NULL_HANDLE };
 		VkResult vk_result = vkCreateShaderModule(device, &create_info, nullptr, &shader_module);
@@ -417,54 +1117,10 @@ namespace vku
 	}
 
 
-	class PipelineLayout
+	inline Result<ShaderModule> create_shader_module(VkDevice device, const std::vector<char>& code)
 	{
-	public:
-		PipelineLayout() : device(VK_NULL_HANDLE), pipeline_layout(VK_NULL_HANDLE) { }
-
-		PipelineLayout(VkDevice d, VkPipelineLayout s) : device(d), pipeline_layout(s) { }
-
-		PipelineLayout(PipelineLayout&& p) noexcept : device(p.device), pipeline_layout(p.pipeline_layout)
-		{
-			p.clear();
-		}
-
-		PipelineLayout(const PipelineLayout& s) = delete;
-
-		~PipelineLayout() { destroy(); }
-
-		inline PipelineLayout& operator=(PipelineLayout&& p)
-		{
-			device = p.device;
-			pipeline_layout = p.pipeline_layout;
-			p.clear();
-			return *this;
-		}
-
-		inline operator VkPipelineLayout() const
-		{
-			return pipeline_layout;
-		}
-
-		inline void destroy()
-		{
-			if (device != VK_NULL_HANDLE && pipeline_layout != VK_NULL_HANDLE)
-			{
-				vkDestroyPipelineLayout(device, pipeline_layout, nullptr);
-			}
-			clear();
-		}
-	private:
-
-		inline void clear()
-		{
-			device = VK_NULL_HANDLE;
-			pipeline_layout = VK_NULL_HANDLE;
-		}
-
-		VkDevice device{ VK_NULL_HANDLE };
-		VkPipelineLayout pipeline_layout{ VK_NULL_HANDLE };
-	};
+		return create_shader_module(device, reinterpret_cast<const uint32_t*>(code.data()), code.size());
+	}
 
 
 	class PipelineLayoutBuilder
@@ -475,6 +1131,16 @@ namespace vku
 		inline PipelineLayoutBuilder& add_descriptor_set(VkDescriptorSetLayout descriptor_set_layout)
 		{
 			descriptor_set_layouts.push_back(descriptor_set_layout);
+			return *this;
+		}
+
+		inline PipelineLayoutBuilder& add_push_constant_range(VkShaderStageFlags stage_flags, uint32_t offset, uint32_t size)
+		{
+			VkPushConstantRange r;
+			r.stageFlags = stage_flags;
+			r.offset = offset;
+			r.size = size;
+			push_constant_ranges.push_back(r);
 			return *this;
 		}
 
@@ -489,6 +1155,9 @@ namespace vku
 			create_info.pSetLayouts = descriptor_set_layouts.data();
 			create_info.setLayoutCount = descriptor_set_layouts.size();
 
+			create_info.pPushConstantRanges = push_constant_ranges.data();
+			create_info.pushConstantRangeCount = push_constant_ranges.size();
+
 			VkResult vk_result = vkCreatePipelineLayout(device, &create_info, nullptr, &pipeline_layout);
 			if (vk_result != VK_SUCCESS)
 			{
@@ -499,61 +1168,7 @@ namespace vku
 	private:
 		VkDevice device{ VK_NULL_HANDLE };
 		std::vector<VkDescriptorSetLayout> descriptor_set_layouts{};
-	};
-
-
-	class Pipeline
-	{
-	public:
-		Pipeline() : device(VK_NULL_HANDLE), pipeline(VK_NULL_HANDLE), layout(VK_NULL_HANDLE) { }
-		Pipeline(VkDevice d, VkPipeline p, VkPipelineLayout pl) : device(d), pipeline(p), layout(pl) { }
-		Pipeline(Pipeline&& p) noexcept : device(p.device), pipeline(p.pipeline), layout(p.layout) { p.clear(); }
-		~Pipeline() { destroy(); }
-
-		inline bool is_valid() const
-		{
-			return device != VK_NULL_HANDLE && pipeline != VK_NULL_HANDLE;
-		}
-
-		inline void destroy()
-		{
-			if (is_valid())
-			{
-				vkDestroyPipeline(device, pipeline, nullptr);
-			}
-			clear();
-		}
-
-		inline Pipeline& operator=(Pipeline&& p)
-		{
-			destroy();
-			device = p.device;
-			pipeline = p.pipeline;
-			layout = p.layout;
-			p.clear();
-			return *this;
-		}
-
-		inline operator VkPipeline() const
-		{
-			return pipeline;
-		}
-
-		inline VkPipelineLayout get_layout() const
-		{
-			return layout;
-		}
-	private:
-		inline void clear()
-		{
-			device = VK_NULL_HANDLE;
-			pipeline = VK_NULL_HANDLE;
-			layout = VK_NULL_HANDLE;
-		}
-
-		VkDevice device{ VK_NULL_HANDLE };
-		VkPipelineLayout layout{ VK_NULL_HANDLE };
-		VkPipeline pipeline{ VK_NULL_HANDLE };
+		std::vector<VkPushConstantRange> push_constant_ranges{};
 	};
 
 
@@ -574,17 +1189,16 @@ namespace vku
 			return *this;
 		}
 
-		inline GraphicsPipelineBuilder& add_viewport(float x, float y, float width, float height, float min_depth, float max_depth)
+		inline GraphicsPipelineBuilder& add_viewport(VkViewport& viewport)
 		{
-			VkViewport viewport = {};
-			viewport.x = x;
-			viewport.y = y;
-			viewport.width = width;
-			viewport.height = height;
-			viewport.minDepth = 0.0f;
-			viewport.maxDepth = 1.0f;
 			viewports.push_back(viewport);
 			return *this;
+		}
+
+		inline GraphicsPipelineBuilder& add_viewport(float x, float y, float width, float height, float min_depth, float max_depth)
+		{
+			VkViewport viewport = { x, y, width,height, min_depth, max_depth };
+			return add_viewport(viewport);
 		}
 
 		inline GraphicsPipelineBuilder& set_viewport_count(uint32_t count)
@@ -593,13 +1207,16 @@ namespace vku
 			return *this;
 		}
 
-		inline GraphicsPipelineBuilder& add_scissor(int32_t offsetx, int32_t offsety, uint32_t extentx, uint32_t extenty)
+		inline GraphicsPipelineBuilder& add_scissor(VkRect2D scissor)
 		{
-			VkRect2D scissor{};
-			scissor.offset = { offsetx, offsety };
-			scissor.extent = { extentx, extenty };
 			scissors.push_back(scissor);
 			return *this;
+		}
+
+		inline GraphicsPipelineBuilder& add_scissor(int32_t offsetx, int32_t offsety, uint32_t extentx, uint32_t extenty)
+		{
+			VkRect2D scissor{ { offsetx, offsety }, { extentx, extenty } };
+			return add_scissor(scissor);
 		}
 
 		inline GraphicsPipelineBuilder& set_scissor_count(uint32_t count)
@@ -700,6 +1317,15 @@ namespace vku
 			multisampling.sampleShadingEnable = VK_FALSE;
 			multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
+			// TODO: we need to expose this...
+			VkPipelineDepthStencilStateCreateInfo depthStencil{};
+			depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+			depthStencil.depthTestEnable = VK_TRUE;
+			depthStencil.depthWriteEnable = VK_TRUE;
+			depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+			depthStencil.depthBoundsTestEnable = VK_FALSE;
+			depthStencil.stencilTestEnable = VK_FALSE;
+
 			VkPipelineColorBlendStateCreateInfo color_blending = {};
 			color_blending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
 			color_blending.logicOpEnable = VK_FALSE;
@@ -726,6 +1352,7 @@ namespace vku
 			create_info.pViewportState = &viewport_state;
 			create_info.pRasterizationState = &rasterizer;
 			create_info.pMultisampleState = &multisampling;
+			create_info.pDepthStencilState = &depthStencil;
 			create_info.pColorBlendState = &color_blending;
 			create_info.pDynamicState = &dynamic_info;
 			create_info.layout = pipeline_layout;
@@ -763,109 +1390,18 @@ namespace vku
 	};
 
 
-	struct Buffer
+	class MemoryAllocator
 	{
 	public:
-		Buffer(VkDevice d=VK_NULL_HANDLE, VkBuffer b = VK_NULL_HANDLE, VkDeviceMemory m = VK_NULL_HANDLE, VkDeviceSize s=0, void *map=nullptr) : device(d), buffer(b), memory(m), size(s), mapped(map) { }
-		Buffer(Buffer&& d) : device(d.device), buffer(d.buffer), memory(d.memory), size(d.size), mapped(d.mapped)
-		{ 
-			d.clear();
-		}
-		~Buffer() { destroy(); }
 
-		inline Buffer& operator=(Buffer&& b) noexcept
-		{
-			// TODO: if we're valid, should we destroy ourselves? It seems like we leak if we don't.
-			device = b.device;
-			buffer = b.buffer;
-			memory = b.memory;
-			size = b.size;
-			mapped = b.mapped;
-			b.clear();
-			return *this;
-		}
-
-		inline operator VkBuffer() const
-		{
-			return buffer;
-		}
-
-		inline bool is_valid() const
-		{
-			return device != VK_NULL_HANDLE && buffer != VK_NULL_HANDLE && memory != VK_NULL_HANDLE;
-		}
-
-		inline void destroy()
-		{
-			if (is_valid())
-			{
-				vkDestroyBuffer(device, buffer, nullptr);
-				vkFreeMemory(device, memory, nullptr);
-			}
-			clear();
-		}
-
-		inline VkResult map_memory(VkDeviceSize s=VK_WHOLE_SIZE, VkDeviceSize offset=0)
-		{
-			// TODO: test for validity, convey non-vk errors.
-			return vkMapMemory(device, memory, offset, s, offset, &mapped);
-		}
-
-		inline void* get_mapped() const
-		{
-			return mapped;
-		}
-
-		inline VkDeviceSize get_size() const
-		{
-			return size;
-		}
-
-		inline void unmap_memory()
-		{
-			vkUnmapMemory(device, memory);
-			mapped = nullptr;
-		}
-	private:
-		inline void clear()
-		{
-			device = VK_NULL_HANDLE;
-			buffer = VK_NULL_HANDLE;
-			memory = VK_NULL_HANDLE;
-			size = 0;
-			mapped = nullptr;
-		}
-
-		VkDevice device{ VK_NULL_HANDLE };
-		VkBuffer buffer{ VK_NULL_HANDLE };
-		VkDeviceMemory memory{ VK_NULL_HANDLE };
-		VkDeviceSize size{ 0 };
-		void* mapped{ nullptr };
 	};
 
-	const uint32_t MEMORY_TYPE_NOT_FOUND = std::numeric_limits<uint32_t>::max();
-	const uint32_t PHYSICAL_DEVICE_NOT_PROVIDED = MEMORY_TYPE_NOT_FOUND - 1;
 
-	inline uint32_t find_memory_type(VkPhysicalDevice physical_device, uint32_t type_filter, VkMemoryPropertyFlags  properties)
+
+	class DedicatedMemoryAllocator
 	{
-		if (physical_device == VK_NULL_HANDLE)
-		{
-			return PHYSICAL_DEVICE_NOT_PROVIDED;
-		}
-
-		VkPhysicalDeviceMemoryProperties memProperties;
-		vkGetPhysicalDeviceMemoryProperties(physical_device, &memProperties);
-
-		for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++)
-		{
-			if ((type_filter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties)
-			{
-				return i;
-			}
-		}
-
-		return MEMORY_TYPE_NOT_FOUND;
-	}
+	public:
+	};
 
 
 	class BufferFactory
@@ -929,12 +1465,22 @@ namespace vku
 		VkPhysicalDevice physical_device;
 	};
 
-
 	class SingleTimeCommandExecutor
 	{
 	public:
+		SingleTimeCommandExecutor() : device(VK_NULL_HANDLE), command_pool(VK_NULL_HANDLE), queue(VK_NULL_HANDLE)
+		{
+		}
+
 		SingleTimeCommandExecutor(VkDevice _device, VkCommandPool _command_pool, VkQueue _queue) : device(_device), command_pool(_command_pool), queue(_queue)
 		{
+		}
+
+		void init(VkDevice _device, VkCommandPool _command_pool, VkQueue _queue)
+		{
+			device = _device;
+			command_pool = _command_pool;
+			queue = _queue;
 		}
 
 		inline bool is_valid() const
@@ -942,64 +1488,93 @@ namespace vku
 			return device != VK_NULL_HANDLE && command_pool != VK_NULL_HANDLE && queue != VK_NULL_HANDLE;
 		}
 
-		inline void deallocate(VkCommandBuffer command_buffer) const
+		inline bool in_progress() const
 		{
-			vkFreeCommandBuffers(device, command_pool, 1, &command_buffer);
+			return command_buffer != VK_NULL_HANDLE;
 		}
 
-		template<typename F>
-		Result<VkCommandBuffer> execute(F f, VkFence fence = VK_NULL_HANDLE) const
+		inline void destroy()
+		{
+			if (command_buffer != VK_NULL_HANDLE)
+			{
+				vkFreeCommandBuffers(device, command_pool, 1, &command_buffer);
+				command_buffer = VK_NULL_HANDLE;
+			}
+
+			if (fence != VK_NULL_HANDLE)
+			{
+				vkDestroyFence(device, fence, nullptr);
+				fence = VK_NULL_HANDLE;
+			}
+		}
+
+		Result<CommandBuffer> enter()
 		{
 			Error error{};
-			VkCommandBuffer command_buffer{ VK_NULL_HANDLE };
+
+			if (in_progress())
+			{
+				error = Error{ detail::make_error_code(detail::CommandBufferExecutorError::already_in_progress) };
+				return Result<CommandBuffer>(error);
+			}
 
 			if (!begin_single_time_commands(command_buffer, error))
 			{
-				deallocate(command_buffer);
-				return Result<VkCommandBuffer>(error);
+				destroy();
+				return Result<CommandBuffer>(error);
 			}
 
-			// TODO: allow for an error in f to stop this from continuing
-			bool callback_result = f(command_buffer);
+			return Result<CommandBuffer>(CommandBuffer(device, command_buffer, command_pool));
+		}
 
-			if (!callback_result)
-			{
-				deallocate(command_buffer);
-				error = Error{ detail::make_error_code(detail::CommandBufferExecutorError::callback_failed) };
-				return Result<VkCommandBuffer>(error);
-			}
-
-			bool result = end_single_time_commands(command_buffer, error, fence);
+		Result<Fence> exit()
+		{
+			Error error{};
+			bool result = end_single_time_commands(command_buffer, error);
 
 			if (!result)
 			{
 				// we have a valid command buffer, but there was an error ending the single time commands.
-				deallocate(command_buffer);
-
-				return Result<VkCommandBuffer>(error);
+				destroy();
+				return Result<Fence>(error);
 			}
 
-			// if the user doesn't pass in a fence, wait for the queue to go idle and delete the command buffer
-			// otherwise we assume the user will wait for the fence and destroy the command buffer on their own.
-			if (fence == VK_NULL_HANDLE)
-			{
-				// TODO: figure out if we should be calling this or leaving it to the caller to decide.
-				auto vk_result = vkQueueWaitIdle(queue);
-
-				deallocate(command_buffer);
-
-				if (vk_result != VK_SUCCESS)
-				{
-					error = Error{ detail::make_error_code(detail::CommandBufferExecutorError::wait_idle_failed), vk_result };
-					return Result<VkCommandBuffer>(error);
-				}
-
-				command_buffer = VK_NULL_HANDLE;
-			}
-
-			return Result<VkCommandBuffer>(command_buffer);
+			return Result<Fence>(Fence(device, fence));
 		}
+
+		// waiting destroys the created command buffer and fence.
+		std::optional<Error> wait()
+		{
+			auto vk_result = vkWaitForFences(device, 1, &fence, true, UINT64_MAX);
+
+			if (vk_result != VK_SUCCESS)
+			{
+				// we have a valid command buffer, but there was an error ending the single time commands.
+				return { Error{ detail::make_error_code(detail::CommandBufferExecutorError::wait_failed) } };
+			}
+
+			return {};
+		}
+
 	private:
+		bool create_fence(Error &error)
+		{
+			VkFenceCreateInfo fence_create_info{};
+			fence_create_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+			fence_create_info.pNext = nullptr;
+			fence_create_info.flags = 0;
+
+			auto vk_result = vkCreateFence(device, &fence_create_info, nullptr, &fence);
+
+			if (vk_result != VK_SUCCESS)
+			{
+				error = { detail::make_error_code(detail::CommandBufferExecutorError::create_fence_failed), vk_result };
+				return false;
+			}
+
+			return true;
+		}
+
 		bool begin_single_time_commands(VkCommandBuffer &commandBuffer, Error &error) const
 		{
 			VkCommandBufferAllocateInfo allocInfo{};
@@ -1033,12 +1608,19 @@ namespace vku
 		}
 
 		// returns false if error occurred.
-		bool end_single_time_commands(VkCommandBuffer commandBuffer, Error &error, VkFence fence = VK_NULL_HANDLE) const
+		bool end_single_time_commands(VkCommandBuffer commandBuffer, Error &error)
 		{
 			auto vk_result = vkEndCommandBuffer(commandBuffer);
+
 			if (vk_result != VK_SUCCESS)
 			{
 				error = Error{ detail::make_error_code(detail::CommandBufferExecutorError::end_command_buffer_failed), vk_result };
+				return false;
+			}
+
+			if (!create_fence(error))
+			{
+				error = Error{ detail::make_error_code(detail::CommandBufferExecutorError::create_fence_failed), vk_result };
 				return false;
 			}
 
@@ -1061,154 +1643,10 @@ namespace vku
 		VkDevice device{ VK_NULL_HANDLE };
 		VkQueue queue{ VK_NULL_HANDLE };
 		VkCommandPool command_pool{ VK_NULL_HANDLE };
+		VkCommandBuffer command_buffer{ VK_NULL_HANDLE };
+		VkFence fence{ VK_NULL_HANDLE };
 	};
 
-	enum class DescriptorType
-	{
-		SAMPLER = 0,				// VK_DESCRIPTOR_TYPE_SAMPLER = 0,
-		COMBINED_IMAGE_SAMPLER = 1,	// VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER = 1,
-		SAMPLED_IMAGE = 2,			// VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE = 2,
-		STORAGE_IMAGE = 3,			// VK_DESCRIPTOR_TYPE_STORAGE_IMAGE = 3,
-		UNIFORM_TEXEL_BUFFER = 4,	// VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER = 4,
-		STORAGE_TEXEL_BUFFER = 5,	// VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER = 5,
-		UNIFORM_BUFFER = 6,			// VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER = 6,
-		STORAGE_BUFFER = 7,			// VK_DESCRIPTOR_TYPE_STORAGE_BUFFER = 7,
-		UNIFORM_BUFFER_DYNAMIC = 8, // VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC = 8,
-		STORAGE_BUFFER_DYNAMIC = 9, // VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC = 9,
-		INPUT_ATTACHMENT = 10,		// VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT = 10,
-
-		/*
-		// Provided by VK_VERSION_1_3
-		INLINE_UNIFORM_BLOCK = 11,  // VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK = 1000138000,
-		// Provided by VK_KHR_acceleration_structure
-		ACCELERATION_STRUCTURE_KHR = 12, // VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR = 1000150000,
-		// Provided by VK_NV_ray_tracing
-		ACCELERATION_STRUCTURE_NV = 13, // VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV = 1000165000,
-		// Provided by VK_VALVE_mutable_descriptor_type
-		MUTABLE_VALVE = 14, // VK_DESCRIPTOR_TYPE_MUTABLE_VALVE = 1000351000,
-		// Provided by VK_QCOM_image_processing
-		SAMPLE_WEIGHT_IMAGE_QCOM = 15, // VK_DESCRIPTOR_TYPE_SAMPLE_WEIGHT_IMAGE_QCOM = 1000440000,
-		// Provided by VK_QCOM_image_processing
-		BLOCK_MATCH_IMAGE_QCOM = 16, // VK_DESCRIPTOR_TYPE_BLOCK_MATCH_IMAGE_QCOM = 1000440001,
-		// Provided by VK_EXT_inline_uniform_block
-		INLINE_UNIFORM_BLOCK_EXT = INLINE_UNIFORM_BLOCK,
-		*/
-		MAX = INPUT_ATTACHMENT + 1
-	};
-
-	DescriptorType from_vk(VkDescriptorType t)
-	{
-		switch (t)
-		{
-		case(VK_DESCRIPTOR_TYPE_SAMPLER):
-			return DescriptorType::SAMPLER;
-		case(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER):
-			return DescriptorType::COMBINED_IMAGE_SAMPLER;
-		case(VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE):
-			return DescriptorType::SAMPLED_IMAGE;
-		case(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE):
-			return DescriptorType::STORAGE_IMAGE;
-		case(VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER):
-			return DescriptorType::UNIFORM_TEXEL_BUFFER;
-		case(VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER):
-			return DescriptorType::STORAGE_TEXEL_BUFFER;
-		case(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER):
-			return DescriptorType::UNIFORM_BUFFER;
-		case(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER):
-			return DescriptorType::STORAGE_BUFFER;
-		case(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC):
-			return DescriptorType::UNIFORM_BUFFER_DYNAMIC;
-		case(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC):
-			return DescriptorType::STORAGE_BUFFER_DYNAMIC;
-		case(VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT):
-			return DescriptorType::INPUT_ATTACHMENT;
-		}
-	}
-
-	VkDescriptorType to_vk(DescriptorType t)
-	{
-		switch (t)
-		{
-		case(DescriptorType::SAMPLER):
-			return VK_DESCRIPTOR_TYPE_SAMPLER;
-		case(DescriptorType::COMBINED_IMAGE_SAMPLER):
-			return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-		case(DescriptorType::SAMPLED_IMAGE):
-			return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-		case(DescriptorType::STORAGE_IMAGE):
-			return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-		case(DescriptorType::UNIFORM_TEXEL_BUFFER):
-			return VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
-		case(DescriptorType::STORAGE_TEXEL_BUFFER):
-			return VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
-		case(DescriptorType::UNIFORM_BUFFER):
-			return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-		case(DescriptorType::STORAGE_BUFFER):
-			return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-		case(DescriptorType::UNIFORM_BUFFER_DYNAMIC):
-			return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-		case(DescriptorType::STORAGE_BUFFER_DYNAMIC):
-			return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
-		case(DescriptorType::INPUT_ATTACHMENT):
-			return VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
-		}
-	}
-
-	using DescriptorTypeCounts = std::array<uint16_t, static_cast<size_t>(DescriptorType::MAX)>;
-
-	class DescriptorSetLayout
-	{
-	public:
-		DescriptorSetLayout() : device(VK_NULL_HANDLE), value(VK_NULL_HANDLE), descriptor_pool(VK_NULL_HANDLE), descriptor_type_counts() { }
-		DescriptorSetLayout(VkDevice d, VkDescriptorSetLayout ds, const DescriptorTypeCounts& dsc) : device(d), value(ds), descriptor_type_counts(dsc) { }
-		DescriptorSetLayout(const DescriptorSetLayout& value) = delete;
-		DescriptorSetLayout(DescriptorSetLayout&& value) : device(value.device), value(value.value), descriptor_pool(value.descriptor_pool), descriptor_type_counts(value.descriptor_type_counts)
-		{
-			value.clear();
-		}
-
-		~DescriptorSetLayout() { destroy(); }
-
-		inline void destroy()
-		{
-			if (VK_NULL_HANDLE != device)
-			{
-				vkDestroyDescriptorSetLayout(device, value, nullptr);
-			}
-			
-			clear();
-		}
-
-		inline operator VkDescriptorSetLayout() const
-		{
-			return value;
-		}
-
-		inline DescriptorSetLayout& operator=(DescriptorSetLayout&& s)
-		{
-			destroy();
-			device = s.device;
-			value = s.value;
-			descriptor_pool = s.descriptor_pool;
-			descriptor_type_counts = s.descriptor_type_counts;
-			s.clear();
-			return *this;
-		}
-	private:
-		inline void clear()
-		{
-			value = VK_NULL_HANDLE;
-			device = VK_NULL_HANDLE;
-			descriptor_pool = VK_NULL_HANDLE;
-			descriptor_type_counts = {};
-		}
-		VkDevice device{ VK_NULL_HANDLE };
-		VkDescriptorSetLayout value{ VK_NULL_HANDLE };
-		VkDescriptorPool descriptor_pool{ VK_NULL_HANDLE };
-		DescriptorTypeCounts descriptor_type_counts{};
-
-		friend class DescriptorPoolBuilder; // allow access to descriptor_type_counts
-	};
 
 
 	class DescriptorSetLayoutBuilder
@@ -1278,7 +1716,7 @@ namespace vku
 			return *this;
 		}
 
-		inline Result<VkDescriptorPool> build() const
+		inline Result<DescriptorPool> build() const
 		{
 			VkDescriptorPool result{ VK_NULL_HANDLE };
 
@@ -1307,12 +1745,103 @@ namespace vku
 				// TODO: error and stuff
 			}
 
-			return Result<VkDescriptorPool>(result);
+			return Result<DescriptorPool>(DescriptorPool(device, result));
 		}
 	private:
 		VkDevice device{ VK_NULL_HANDLE };
 		uint32_t max_sets{ 0 };
 		DescriptorTypeCounts descriptor_type_counts{};
+	};
+
+	VkImageSubresourceRange get_default_subresource_range(VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT)
+	{
+		return VkImageSubresourceRange{ aspect, 0, 1, 0, 1 };
+	}
+
+	VkImageViewCreateInfo get_default_image_view_create_info(VkImage image, VkFormat format, VkImageViewType view_type=VK_IMAGE_VIEW_TYPE_2D, VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT)
+	{
+		return VkImageViewCreateInfo{
+			VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+			nullptr,
+			0,
+			image,
+			view_type,
+			format,
+			{},
+			get_default_subresource_range(aspect)
+		};
+	}
+
+	class ImageViewFactory
+	{
+	public:
+		ImageViewFactory(VkDevice d) : device(d) { }
+
+		Result<ImageView> build2D(const Image &image, VkFormat format, VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT) const
+		{
+			VkImageView result{ VK_NULL_HANDLE };
+			VkImageViewCreateInfo create_info = get_default_image_view_create_info(image, format);
+			create_info.subresourceRange.aspectMask = aspect;
+			auto vk_result = vkCreateImageView(device, &create_info, nullptr, &result);
+
+			if (vk_result != VK_SUCCESS)
+			{
+				// TODO: error handling.
+			}
+
+			return { ImageView(device, result) };
+		}
+
+	private:
+		VkDevice device{ VK_NULL_HANDLE };
+	};
+
+
+	VkSamplerCreateInfo default_sampler_create_info(float max_anisotropy)
+	{
+		VkSamplerCreateInfo samplerInfo{};
+
+		samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+		samplerInfo.magFilter = VK_FILTER_LINEAR;
+		samplerInfo.minFilter = VK_FILTER_LINEAR;
+		samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+		samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+		samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+		samplerInfo.anisotropyEnable = VK_TRUE;
+		samplerInfo.maxAnisotropy = max_anisotropy;
+		samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+		samplerInfo.unnormalizedCoordinates = VK_FALSE;
+		samplerInfo.compareEnable = VK_FALSE;
+		samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+		samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+
+		return samplerInfo;
+	}
+
+	class SamplerFactory
+	{
+	public:
+		SamplerFactory(VkDevice d, VkPhysicalDevice pd) : device(d), physical_device(pd) { }
+
+		Result<Sampler> build() const
+		{
+			VkPhysicalDeviceProperties properties{};
+			VkSampler result{ VK_NULL_HANDLE };
+			vkGetPhysicalDeviceProperties(physical_device, &properties);
+
+			auto samplerInfo = default_sampler_create_info(properties.limits.maxSamplerAnisotropy);
+
+			if (vkCreateSampler(device, &samplerInfo, nullptr, &result) != VK_SUCCESS)
+			{
+				// throw std::runtime_error("failed to create texture sampler!");
+				return { Error{} };
+			}
+
+			return { Sampler(device, result) };
+		}
+	private:
+		VkDevice device{ VK_NULL_HANDLE };
+		VkPhysicalDevice physical_device{ VK_NULL_HANDLE };
 	};
 
 	class DescriptorSetBuilder
@@ -1325,29 +1854,43 @@ namespace vku
 
 		inline DescriptorSetBuilder& write_uniform_buffer(uint32_t binding, uint32_t array_element, VkBuffer buffer, VkDeviceSize offset, VkDeviceSize range)
 		{
-			UniformBufferWrite write{};
+			BufferWrite write{};
 			write.binding = binding;
 			write.array_element = array_element;
 			write.buffer = buffer;
 			write.offset = offset;
 			write.range = range;
-			uniform_buffer_writes.push_back(write);
+			write.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+			buffer_writes.push_back(write);
 			return *this;
 		}
 
-		inline DescriptorSetBuilder& write_combined_image_sampler(uint32_t binding, uint32_t array_element, VkSampler sampler, VkImageView image_view, VkImageLayout image_layout)
+		inline DescriptorSetBuilder& write_storage_buffer(uint32_t binding, uint32_t array_element, VkBuffer buffer, VkDeviceSize offset, VkDeviceSize range)
+		{
+			BufferWrite write{};
+			write.binding = binding;
+			write.array_element = array_element;
+			write.buffer = buffer;
+			write.offset = offset;
+			write.range = range;
+			write.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			buffer_writes.push_back(write);
+			return *this;
+		}
+
+		inline DescriptorSetBuilder& write_combined_image_sampler(uint32_t binding, uint32_t array_element, const Image &image, const ImageView &image_view, const Sampler &sampler)
 		{
 			CombinedImageSamplerWrite write{};
 			write.binding = binding;
 			write.array_element = array_element;
 			write.sampler = sampler;
 			write.image_view = image_view;
-			write.image_layout = image_layout;
+			write.image_layout = image.layout;
 			combined_image_sampler_writes.push_back(write);
 			return *this;
 		}
 
-		inline Result<VkDescriptorSet> build() const
+		inline Result<DescriptorSet> build() const
 		{
 			// allocate the descriptor sets.
 			VkDescriptorSetAllocateInfo alloc_info{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
@@ -1369,26 +1912,24 @@ namespace vku
 			VkWriteDescriptorSet w{};
 			w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 			w.dstSet = result;
-			std::vector<VkWriteDescriptorSet> writes(uniform_buffer_writes.size() + combined_image_sampler_writes.size(), w);
+			std::vector<VkWriteDescriptorSet> writes(buffer_writes.size() + combined_image_sampler_writes.size(), w);
 
 			// populate the bufferinfos
-			std::vector<VkDescriptorBufferInfo> buffer_infos(uniform_buffer_writes.size());
+			std::vector<VkDescriptorBufferInfo> buffer_infos(buffer_writes.size());
+			std::vector<VkDescriptorImageInfo> image_infos(combined_image_sampler_writes.size());
 
 			// populate the buffer writes
 			uint32_t write_index = 0;
 			uint32_t buffer_index = 0;
-			for (const auto &uniform_buffer_write: uniform_buffer_writes)
+			uint32_t image_index = 0;
+
+			for (const auto &uniform_buffer_write: buffer_writes)
 			{
 				uniform_buffer_write.populate(writes[write_index], buffer_infos[buffer_index]);
 				buffer_index += 1;
 				write_index += 1;
 			}
 
-			// populate the image_infos
-			std::vector<VkDescriptorImageInfo> image_infos(combined_image_sampler_writes.size());
-
-			// populate the image writes
-			uint32_t image_index = 0;
 			for (const auto &combined_image_sampler_write: combined_image_sampler_writes)
 			{
 				combined_image_sampler_write.populate(writes[write_index], image_infos[image_index]);
@@ -1399,22 +1940,24 @@ namespace vku
 			// perform the writes
 			vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 
-			return Result<VkDescriptorSet>(result);
+			return Result<DescriptorSet>(DescriptorSet(device, result, descriptor_pool));
 		}
 	private:
-		struct UniformBufferWrite
+		struct BufferWrite
 		{
 			uint32_t binding;
 			uint32_t array_element;
 			VkBuffer buffer;
 			VkDeviceSize offset;
 			VkDeviceSize range;
+			VkDescriptorType type;
 
 			inline void populate(VkWriteDescriptorSet& write, VkDescriptorBufferInfo& buffer_info) const
 			{
 				write.pBufferInfo = &buffer_info;
+				write.dstBinding = binding;
 				write.descriptorCount = 1;
-				write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+				write.descriptorType = type;
 				write.dstArrayElement = array_element;
 
 				buffer_info.buffer = buffer;
@@ -1434,8 +1977,9 @@ namespace vku
 			inline void populate(VkWriteDescriptorSet& write, VkDescriptorImageInfo &image_info) const
 			{
 				write.pImageInfo = &image_info;
+				write.dstBinding = binding;
 				write.descriptorCount = 1;
-				write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+				write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 				write.dstArrayElement = array_element;
 
 				image_info.imageLayout = image_layout;
@@ -1448,7 +1992,48 @@ namespace vku
 		VkDescriptorSetLayout layout{ VK_NULL_HANDLE };
 		VkDescriptorPool descriptor_pool{ VK_NULL_HANDLE };
 
-		std::vector<UniformBufferWrite> uniform_buffer_writes{};
+		std::vector<BufferWrite> buffer_writes{};
 		std::vector<CombinedImageSamplerWrite> combined_image_sampler_writes{};
 	};
+
+
+	class BufferAddressGetter
+	{
+	public:
+		BufferAddressGetter(VkDevice d) : device(d)
+		{
+			vkGetBufferDeviceAddress = reinterpret_cast<PFN_vkGetBufferDeviceAddress>(vkGetDeviceProcAddr(device, "vkGetBufferDeviceAddress"));
+		}
+
+		inline VkDeviceAddress operator()(Buffer& buffer)
+		{
+			VkBufferDeviceAddressInfo info;
+			info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+			info.pNext = nullptr;
+			info.buffer = buffer;
+			VkDeviceAddress result = vkGetBufferDeviceAddress(device, &info);
+			buffer.device_address = result;
+			return result;
+		}
+	private:
+		VkDevice device{ VK_NULL_HANDLE };
+		PFN_vkGetBufferDeviceAddress vkGetBufferDeviceAddress{ nullptr };
+	};
+
+
+	VkFormat find_supported_format(VkPhysicalDevice physical_device, const std::vector<VkFormat>& candidates, VkImageTiling tiling, VkFormatFeatureFlags features) {
+		for (VkFormat format : candidates) {
+			VkFormatProperties props;
+			vkGetPhysicalDeviceFormatProperties(physical_device, format, &props);
+
+			if (tiling == VK_IMAGE_TILING_LINEAR && (props.linearTilingFeatures & features) == features) {
+				return format;
+			}
+			else if (tiling == VK_IMAGE_TILING_OPTIMAL && (props.optimalTilingFeatures & features) == features) {
+				return format;
+			}
+		}
+
+		return VK_FORMAT_UNDEFINED;
+	}
 };
