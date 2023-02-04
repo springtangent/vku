@@ -20,3 +20,6 @@
 [submodule "extern/imgui"]
 	path = extern/imgui
 	url = ../../ocornut/imgui.git
+[submodule "extern/ImGuizmo"]
+	path = extern/ImGuizmo
+	url = ../../CedricGuillemet/ImGuizmo

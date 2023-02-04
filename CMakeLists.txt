@@ -27,11 +27,15 @@ add_subdirectory("${VKU_EXAMPLES_EXTERN_DIR}/glfw")
 add_subdirectory("${VKU_EXAMPLES_EXTERN_DIR}/vk-bootstrap")
 add_subdirectory("${VKU_EXAMPLES_EXTERN_DIR}/pybind11")
 add_subdirectory("${VKU_EXAMPLES_EXTERN_DIR}/fmt")
-include_directories("${VKU_EXAMPLES_EXTERN_DIR}/imgui")
+
+set(IMGUI_DIR "${VKU_EXAMPLES_EXTERN_DIR}/imgui")
+set(IMGUIZMO_DIR "${VKU_EXAMPLES_EXTERN_DIR}/ImGuizmo")
+include_directories("${IMGUI_DIR}")
+include_directories("${IMGUIZMO_DIR}")
 include_directories("${VKU_EXAMPLES_EXTERN_DIR}/glm")
 include_directories("${VKU_EXAMPLES_EXTERN_DIR}/stb")
 
-set(IMGUI_DIR "${VKU_EXAMPLES_EXTERN_DIR}/imgui")
+
 set(IMGUI_BACKENDS_DIR "${IMGUI_DIR}/backends")
 set(IMGUI_CPP_FILES 
     "${IMGUI_DIR}/imgui.cpp"
@@ -41,6 +45,10 @@ set(IMGUI_CPP_FILES
     "${IMGUI_DIR}/imgui_tables.cpp"
     "${IMGUI_BACKENDS_DIR}/imgui_impl_glfw.cpp"
     "${IMGUI_BACKENDS_DIR}/imgui_impl_vulkan.cpp"
+)
+
+set(IMGUIZMO_CPP_FILES 
+    "${IMGUIZMO_DIR}/ImGuizmo.cpp"
 )
 
 include_directories(include ${Vulkan_INCLUDE_DIRS})
@@ -58,7 +66,7 @@ target_link_libraries(vku_device_buffer_example PRIVATE ${Vulkan_LIBRARIES} glfw
 add_executable(vku_uniform_buffer_example examples/uniform_buffer_example.cpp)
 target_link_libraries(vku_uniform_buffer_example PRIVATE ${Vulkan_LIBRARIES} glfw vk-bootstrap::vk-bootstrap)
 
-add_library(pyvku MODULE source/pyvku.cpp ${IMGUI_CPP_FILES})
+add_library(pyvku MODULE source/pyvku.cpp ${IMGUI_CPP_FILES} ${IMGUIZMO_CPP_FILES})
 target_link_libraries(pyvku PRIVATE pybind11::module pybind11::lto pybind11::windows_extras ${Vulkan_LIBRARIES} vk-bootstrap::vk-bootstrap glfw fmt::fmt)
 pybind11_extension(pyvku)
 if(NOT MSVC AND NOT ${CMAKE_BUILD_TYPE} MATCHES Debug|RelWithDebInfo)

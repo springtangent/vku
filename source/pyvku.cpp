@@ -7,6 +7,7 @@
 #include "imgui.h"
 #include "backends/imgui_impl_glfw.h"
 #include "backends/imgui_impl_vulkan.h"
+#include "ImGuizmo.h"
 
 
 #include <VkBootstrap.h>
@@ -19,7 +20,9 @@
 #include <stb_image.h>
 
 // TODO: do we need this?
+#include <glm/glm.hpp>
 #include <glm/gtx/projection.hpp>
+#include <glm/gtc/type_ptr.hpp>
 
 namespace py = pybind11;
 
@@ -438,6 +441,7 @@ struct Imgui
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
+        ImGuizmo::BeginFrame();
     }
 
     void render(vku::CommandBuffer command_buffer)
@@ -511,6 +515,72 @@ struct Imgui
     bool selectable(const char* label, bool selected, ImGuiSelectableFlags flags = 0, std::array<float, 2> size = { 0.0f, 0.0f })
     {
         return ImGui::Selectable(label, selected, flags, ImVec2(size[0], size[1]));
+    }
+
+    void same_line(float offset_from_start_x=0.0f, float spacing=0.0f)
+    {
+        ImGui::SameLine(offset_from_start_x, spacing);
+    }
+
+    bool radio_button(const char *label, bool active)
+    {
+        return ImGui::RadioButton(label, active);
+    }
+
+    ImGuiIO* get_io()
+    {
+        return &ImGui::GetIO();
+    }
+
+    void set_rect(float x, float y, float w, float h)
+    {
+        ImGuizmo::SetRect(x, y, w, h);
+    }
+
+    bool manipulate(py::buffer view, py::buffer proj, ImGuizmo::OPERATION operation, ImGuizmo::MODE mode, py::buffer matrix)
+    {
+        auto view_buffer_info = view.request();
+        if (view_buffer_info.itemsize * view_buffer_info.size < sizeof(float) * 16)
+        {
+            throw py::value_error("view was not large enough for a 16 element matrix.");
+        }
+        float* v = (float *)view_buffer_info.ptr;
+
+        auto proj_buffer_info = proj.request();
+        if (proj_buffer_info.itemsize * proj_buffer_info.size < sizeof(float) * 16)
+        {
+            throw py::value_error("view was not large enough for a 16 element matrix.");
+        }
+        float* p = (float*)proj_buffer_info.ptr;
+
+        auto matrix_buffer_info = matrix.request();
+        if (matrix_buffer_info.itemsize * matrix_buffer_info.size < sizeof(float) * 16)
+        {
+            throw py::value_error("view was not large enough for a 16 element matrix.");
+        }
+        float* m = (float*)matrix_buffer_info.ptr;
+
+        return ImGuizmo::Manipulate(v, p, operation, mode, m);
+    }
+    
+    std::array<std::array<float, 3>, 3> decompose_matrix(py::buffer m)
+    {
+        // TODO: bound checking.
+        auto m_info = m.request();
+        std::array<float, 3> t;
+        std::array<float, 3> r;
+        std::array<float, 3> s;
+        ImGuizmo::DecomposeMatrixToComponents((float*)m_info.ptr, t.data(), r.data(), s.data());
+
+        return { t, r, s };
+    }
+
+    // TODO: can the arguments here be std::array<float, 3>?
+    std::array<float, 16> recompose_matrix(std::array<float, 3> t, std::array<float, 3> r, std::array<float, 3> s)
+    {
+        std::array<float, 16> m;
+        ImGuizmo::RecomposeMatrixFromComponents(m.data(), t.data(), r.data(), s.data());
+        return m;
     }
 };
 
@@ -1446,7 +1516,7 @@ std::tuple<uint32_t, uint32_t, uint32_t> get_vulkan_version()
 {
     uint32_t instanceVersion = VK_API_VERSION_1_0;
     auto FN_vkEnumerateInstanceVersion = PFN_vkEnumerateInstanceVersion(vkGetInstanceProcAddr(nullptr, "vkEnumerateInstanceVersion"));
-    if (vkEnumerateInstanceVersion) {
+    if (vkEnumerateInstanceVersion != nullptr) {
         vkEnumerateInstanceVersion(&instanceVersion);
     }
 
@@ -1882,6 +1952,33 @@ inline void bind_imgui(py::module m)
         .value("Disabled", ImGuiSelectableFlags_::ImGuiSelectableFlags_Disabled)
         .value("AllowItemOverlap", ImGuiSelectableFlags_::ImGuiSelectableFlags_AllowItemOverlap);
 
+    py::enum_<ImGuizmo::OPERATION>(m, "Operation", py::arithmetic())
+        .value("TRANSLATE", ImGuizmo::TRANSLATE)
+        .value("ROTATE", ImGuizmo::ROTATE)
+        .value("SCALE", ImGuizmo::SCALE)
+        .value("SCALEU", ImGuizmo::SCALEU)
+        .value("TRANSLATE_X", ImGuizmo::TRANSLATE_X)
+        .value("TRANSLATE_Y", ImGuizmo::TRANSLATE_Y)
+        .value("TRANSLATE_Z", ImGuizmo::TRANSLATE_Z)
+        .value("ROTATE_X", ImGuizmo::ROTATE_X)
+        .value("ROTATE_Y", ImGuizmo::ROTATE_Y)
+        .value("ROTATE_Z", ImGuizmo::ROTATE_Z)
+        .value("SCALE_X", ImGuizmo::SCALE_X)
+        .value("SCALE_Y", ImGuizmo::SCALE_Y)
+        .value("SCALE_Z", ImGuizmo::SCALE_Z)
+        .value("SCALE_XU", ImGuizmo::SCALE_XU)
+        .value("SCALE_YU", ImGuizmo::SCALE_YU)
+        .value("SCALE_ZU", ImGuizmo::SCALE_ZU);
+
+    py::enum_<ImGuizmo::MODE>(m, "Mode", py::arithmetic())
+        .value("LOCAL", ImGuizmo::LOCAL)
+        .value("WORLD", ImGuizmo::WORLD);;
+
+    py::class_<ImGuiIO>(m, "IO")
+        .def_property_readonly("display_size", [](ImGuiIO &io) -> std::array<float, 2> {
+            return { io.DisplaySize.x, io.DisplaySize.y };
+         });
+
     py::class_<Imgui, std::shared_ptr<Imgui>>(m, "Imgui")
         .def(py::init<std::shared_ptr<Window>, vku::Instance, PhysicalDevice, vku::Device, vku::Queue, uint32_t, vku::CommandPool, VkSampleCountFlagBits>(),
             py::arg("window"), py::arg("instance"), py::arg("physical_device"), py::arg("device"), py::arg("queue"), py::arg("queue_family"), py::arg("command_pool"), py::arg("sample_count") = VK_SAMPLE_COUNT_1_BIT)
@@ -1899,9 +1996,14 @@ inline void bind_imgui(py::module m)
         .def("checkbox", &Imgui::checkbox)
         .def("tree_node", &Imgui::tree_node)
         .def("tree_pop", &Imgui::tree_pop)
-        .def("selectable", &Imgui::selectable, py::arg("label"), py::arg("selected"), py::arg("flags") = 0, py::arg("size") = std::array<float, 2>{ 0.0f, 0.0f });
-
-
+        .def("selectable", &Imgui::selectable, py::arg("label"), py::arg("selected"), py::arg("flags") = 0, py::arg("size") = std::array<float, 2>{ 0.0f, 0.0f })
+        .def("same_line", &Imgui::same_line, py::arg("offset_from_start_x") = 0.0f, py::arg("spacing") = 0.0f)
+        .def("radio_button", &Imgui::radio_button, py::arg("label"), py::arg("active"))
+        .def("get_io", &Imgui::get_io, py::return_value_policy::reference_internal)
+        .def("manipulate", &Imgui::manipulate)
+        .def("set_rect", &Imgui::set_rect)
+        .def("decompose_matrix", &Imgui::decompose_matrix)
+        .def("recompose_matrix", &Imgui::recompose_matrix);
 }
 
 
