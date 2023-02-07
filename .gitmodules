@@ -23,3 +23,9 @@
 [submodule "extern/ImGuizmo"]
 	path = extern/ImGuizmo
 	url = ../../CedricGuillemet/ImGuizmo
+[submodule "extern/SPIRV-Cross"]
+	path = extern/SPIRV-Cross
+	url = ../../KhronosGroup/SPIRV-Cross.git
+[submodule "extern/imnodes"]
+	path = extern/imnodes
+	url = ../../Nelarius/imnodes

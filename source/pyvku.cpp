@@ -8,6 +8,7 @@
 #include "backends/imgui_impl_glfw.h"
 #include "backends/imgui_impl_vulkan.h"
 #include "ImGuizmo.h"
+#include "imnodes.h"
 
 
 #include <VkBootstrap.h>
@@ -380,6 +381,7 @@ struct Imgui
 
         py::print("Imgui::init creating context.");
         ImGui::CreateContext();
+        ImNodes::CreateContext();
 
         py::print("Imgui::init initializing vulkan.");
         // window_data.
@@ -453,9 +455,11 @@ struct Imgui
 
     void destroy()
     {
+        py::print("Imgui::destroy");
         vkDestroyDescriptorPool(device, descriptor_pool, nullptr);
         ImGui_ImplVulkan_Shutdown();
         ImGui_ImplGlfw_Shutdown();
+        ImNodes::DestroyContext();
         ImGui::DestroyContext();
     }
 
@@ -512,6 +516,18 @@ struct Imgui
         return { value, res };
     }
 
+    std::tuple<std::array<float, 2>, bool> input_float2(const char* label, std::array<float, 2> value)
+    {
+        bool res = ImGui::InputFloat2(label, value.data());
+        return { value, res };
+    }
+
+    std::tuple<std::array<float, 3>, bool> input_float3(const char* label, std::array<float, 3> value)
+    {
+        bool res = ImGui::InputFloat3(label, value.data());
+        return { value, res };
+    }
+
     bool selectable(const char* label, bool selected, ImGuiSelectableFlags flags = 0, std::array<float, 2> size = { 0.0f, 0.0f })
     {
         return ImGui::Selectable(label, selected, flags, ImVec2(size[0], size[1]));
@@ -539,30 +555,30 @@ struct Imgui
 
     bool manipulate(py::buffer view, py::buffer proj, ImGuizmo::OPERATION operation, ImGuizmo::MODE mode, py::buffer matrix)
     {
-        auto view_buffer_info = view.request();
-        if (view_buffer_info.itemsize * view_buffer_info.size < sizeof(float) * 16)
-        {
-            throw py::value_error("view was not large enough for a 16 element matrix.");
-        }
-        float* v = (float *)view_buffer_info.ptr;
+auto view_buffer_info = view.request();
+if (view_buffer_info.itemsize * view_buffer_info.size < sizeof(float) * 16)
+{
+    throw py::value_error("view was not large enough for a 16 element matrix.");
+}
+float* v = (float*)view_buffer_info.ptr;
 
-        auto proj_buffer_info = proj.request();
-        if (proj_buffer_info.itemsize * proj_buffer_info.size < sizeof(float) * 16)
-        {
-            throw py::value_error("view was not large enough for a 16 element matrix.");
-        }
-        float* p = (float*)proj_buffer_info.ptr;
+auto proj_buffer_info = proj.request();
+if (proj_buffer_info.itemsize * proj_buffer_info.size < sizeof(float) * 16)
+{
+    throw py::value_error("view was not large enough for a 16 element matrix.");
+}
+float* p = (float*)proj_buffer_info.ptr;
 
-        auto matrix_buffer_info = matrix.request();
-        if (matrix_buffer_info.itemsize * matrix_buffer_info.size < sizeof(float) * 16)
-        {
-            throw py::value_error("view was not large enough for a 16 element matrix.");
-        }
-        float* m = (float*)matrix_buffer_info.ptr;
+auto matrix_buffer_info = matrix.request();
+if (matrix_buffer_info.itemsize * matrix_buffer_info.size < sizeof(float) * 16)
+{
+    throw py::value_error("view was not large enough for a 16 element matrix.");
+}
+float* m = (float*)matrix_buffer_info.ptr;
 
-        return ImGuizmo::Manipulate(v, p, operation, mode, m);
+return ImGuizmo::Manipulate(v, p, operation, mode, m);
     }
-    
+
     std::array<std::array<float, 3>, 3> decompose_matrix(py::buffer m)
     {
         // TODO: bound checking.
@@ -581,6 +597,138 @@ struct Imgui
         std::array<float, 16> m;
         ImGuizmo::RecomposeMatrixFromComponents(m.data(), t.data(), r.data(), s.data());
         return m;
+    }
+
+    void begin_node_editor()
+    {
+        ImNodes::BeginNodeEditor();
+    }
+
+    void end_node_editor(bool minimap=false)
+    {
+        if (minimap)
+        {
+            ImNodes::MiniMap(); // TODO: this has arguments for size and location.
+        }
+        ImNodes::EndNodeEditor();
+    }
+
+    void begin_node(int id)
+    {
+        ImNodes::BeginNode(id);
+    }
+
+    void end_node()
+    {
+        ImNodes::EndNode();
+    }
+
+    // TODO: this has an argument for shape
+    void begin_node_input_attribute(int id, ImNodesPinShape_ shape= ImNodesPinShape_Circle)
+    {
+        ImNodes::BeginInputAttribute(id, shape);
+    }
+
+    void end_node_input_attribute()
+    {
+        ImNodes::EndInputAttribute();
+    }
+
+    // TODO: this has an argument for shape
+    void begin_node_output_attribute(int id, ImNodesPinShape_ shape = ImNodesPinShape_Circle)
+    {
+        ImNodes::BeginOutputAttribute(id, shape);
+    }
+
+    void end_node_output_attribute()
+    {
+        ImNodes::EndOutputAttribute();
+    }
+
+    void begin_node_title_bar()
+    {
+        ImNodes::BeginNodeTitleBar();
+    }
+
+    void end_node_title_bar()
+    {
+        ImNodes::EndNodeTitleBar();
+    }
+
+    void link(int id, int first, int second)
+    {
+        ImNodes::Link(id, first, second);
+    }
+
+    std::optional<std::pair<int, int>> is_link_created()
+    {
+        int first, second;
+        if (ImNodes::IsLinkCreated(&first, &second))
+        {
+            return { {first, second} };
+        }
+        return {};
+    }
+
+    std::optional<int> is_node_hovered()
+    {
+        int value;
+        if (ImNodes::IsNodeHovered(&value))
+        {
+            return { value };
+        }
+        return {};
+    }
+
+    bool is_node_selected(int node_id)
+    {
+        return ImNodes::IsNodeSelected(node_id);
+    }
+
+    std::vector<int> selected_nodes()
+    {
+        std::vector<int> results(ImNodes::NumSelectedNodes());
+        if (results.size())
+        {
+            ImNodes::GetSelectedNodes(results.data());
+        }
+        
+        return results;
+    }
+
+    std::vector<int> selected_links()
+    {
+        std::vector<int> results(ImNodes::NumSelectedLinks());
+        if (results.size())
+        {
+            ImNodes::GetSelectedLinks(results.data());
+        }
+        return results;
+    }
+
+    void push_item_width(float w)
+    {
+        ImGui::PushItemWidth(w);
+    }
+
+    void pop_item_width()
+    {
+        ImGui::PopItemWidth();
+    }
+
+    bool is_key_pressed(int key, bool repeat=true)
+    {
+        return ImGui::IsKeyPressed((ImGuiKey)key, repeat);
+    }
+
+    void clear_node_selection()
+    {
+        ImNodes::ClearNodeSelection();
+    }
+
+    void clear_link_selection()
+    {
+        ImNodes::ClearLinkSelection();
     }
 };
 
@@ -1972,7 +2120,15 @@ inline void bind_imgui(py::module m)
 
     py::enum_<ImGuizmo::MODE>(m, "Mode", py::arithmetic())
         .value("LOCAL", ImGuizmo::LOCAL)
-        .value("WORLD", ImGuizmo::WORLD);;
+        .value("WORLD", ImGuizmo::WORLD);
+
+    py::enum_<ImNodesPinShape_>(m, "NodePinShape")
+        .value("Circle", ImNodesPinShape_Circle)
+        .value("CircleFilled", ImNodesPinShape_CircleFilled)
+        .value("Triangle", ImNodesPinShape_Triangle)
+        .value("TriangleFilled", ImNodesPinShape_TriangleFilled)
+        .value("Quad", ImNodesPinShape_Quad)
+        .value("QuadFilled", ImNodesPinShape_QuadFilled);
 
     py::class_<ImGuiIO>(m, "IO")
         .def_property_readonly("display_size", [](ImGuiIO &io) -> std::array<float, 2> {
@@ -1993,6 +2149,8 @@ inline void bind_imgui(py::module m)
         .def("text", &Imgui::text)
         .def("button", &Imgui::button)
         .def("input_float", &Imgui::input_float, py::arg("label"), py::arg("value"), py::arg("step") = 0.0f, py::arg("step_fast") = 0.0f, py::arg("format") = "%.3f")
+        .def("input_float2", &Imgui::input_float2, py::arg("label"), py::arg("value"))
+        .def("input_float3", &Imgui::input_float3, py::arg("label"), py::arg("value"))
         .def("checkbox", &Imgui::checkbox)
         .def("tree_node", &Imgui::tree_node)
         .def("tree_pop", &Imgui::tree_pop)
@@ -2000,10 +2158,31 @@ inline void bind_imgui(py::module m)
         .def("same_line", &Imgui::same_line, py::arg("offset_from_start_x") = 0.0f, py::arg("spacing") = 0.0f)
         .def("radio_button", &Imgui::radio_button, py::arg("label"), py::arg("active"))
         .def("get_io", &Imgui::get_io, py::return_value_policy::reference_internal)
-        .def("manipulate", &Imgui::manipulate)
+        .def("manipulate", &Imgui::manipulate, py::arg("view"), py::arg("proj"), py::arg("operation"), py::arg("mode"), py::arg("matrix"))
         .def("set_rect", &Imgui::set_rect)
         .def("decompose_matrix", &Imgui::decompose_matrix)
-        .def("recompose_matrix", &Imgui::recompose_matrix);
+        .def("recompose_matrix", &Imgui::recompose_matrix)
+        .def("begin_node_editor", &Imgui::begin_node_editor)
+        .def("end_node_editor", &Imgui::end_node_editor, py::arg("minimap")=false)
+        .def("begin_node", &Imgui::begin_node)
+        .def("end_node", &Imgui::end_node)
+        .def("begin_node_input_attribute", &Imgui::begin_node_input_attribute, py::arg("name"), py::arg("shape")=ImNodesPinShape_Circle)
+        .def("end_node_input_attribute", &Imgui::end_node_input_attribute)
+        .def("begin_node_output_attribute", &Imgui::begin_node_output_attribute, py::arg("name"), py::arg("shape") = ImNodesPinShape_Circle)
+        .def("end_node_output_attribute", &Imgui::end_node_output_attribute)
+        .def("begin_node_title_bar", &Imgui::begin_node_title_bar)
+        .def("end_node_title_bar", &Imgui::end_node_title_bar)
+        .def("link", &Imgui::link, py::arg("id"), py::arg("first"), py::arg("second"))
+        .def("is_link_created", &Imgui::is_link_created)
+        .def("is_node_hovered", &Imgui::is_node_hovered)
+        .def("is_node_selected", &Imgui::is_node_selected)
+        .def("selected_links", &Imgui::selected_links)
+        .def("selected_nodes", &Imgui::selected_nodes)
+        .def("push_item_width", &Imgui::push_item_width)
+        .def("pop_item_width", &Imgui::pop_item_width)
+        .def("is_key_pressed", &Imgui::is_key_pressed, py::arg("key"), py::arg("repeat")=true)
+        .def("clear_node_selection", &Imgui::clear_node_selection)
+        .def("clear_link_selection", &Imgui::clear_link_selection);
 }
 
 
